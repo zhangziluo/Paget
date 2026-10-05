@@ -1,0 +1,3597 @@
+/*
+ * 拟物化「竖排书架」主题（参考静读天下）。
+ *
+ * 这里只负责观感：下面每个类名都对应现有视图的 DOM 结构与数据绑定，
+ * 没有任何颜色/尺寸被写进 TSX 的逻辑里，内核调用与数据读写路径完全不受影响。
+ *
+ * 木纹用一张半透明灰的 src/assets/wood-texture.svg，叠在浅木/深木两种底色上，
+ * 所以只需一个纹理资产，浅色与深色各一套 CSS 变量即可。
+ */
+
+:root {
+  color-scheme: light;
+
+  /* 木料底色：由浅到深 */
+  --wood-page: #d8c2a0;
+  --wood-surface: #e8d5b4;
+  --wood-board: #cbb089;
+  --wood-deep: #a98a62;
+  --wood-edge: #8a6a45;
+  --surface-2: rgba(120, 84, 48, 0.1);
+  --field-bg: rgba(255, 252, 244, 0.72);
+
+  /* 书脊的几种「封面色」 */
+  --spine-1: #e8d5b4;
+  --spine-2: #c98f63;
+  --spine-3: #7f97a8;
+  --spine-4: #a86a5c;
+
+  --wood-line: rgba(90, 62, 36, 0.35);
+  --wood-hi: rgba(255, 250, 235, 0.65);
+  --ink: #33241a;
+  --accent: #b5651d;
+  --ok: #3e7d3a;
+  --danger: #a4331f;
+
+  --texture: url("./assets/wood-texture.svg");
+  --shadow-sm: 0 1px 0 var(--wood-hi) inset, 0 -1px 0 rgba(0, 0, 0, 0.14) inset,
+    0 2px 4px rgba(40, 25, 10, 0.25);
+  --shadow-md: 0 1px 0 rgba(255, 250, 235, 0.45) inset,
+    0 -2px 4px rgba(0, 0, 0, 0.16) inset, 0 7px 16px rgba(40, 25, 10, 0.3);
+  --font: "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui,
+    sans-serif;
+}
+
+/* 深色木纹：同一套布局，只换木料与文字颜色 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --wood-page: #180f08;
+    --wood-surface: #2e2015;
+    --wood-board: #3d2b1b;
+    --wood-deep: #241810;
+    --wood-edge: #0f0a05;
+    --surface-2: rgba(0, 0, 0, 0.28);
+    --field-bg: rgba(0, 0, 0, 0.32);
+
+    --spine-1: #3a2a1b;
+    --spine-2: #4a2f1c;
+    --spine-3: #26333d;
+    --spine-4: #3d2320;
+
+    --wood-line: rgba(15, 9, 4, 0.75);
+    --wood-hi: rgba(255, 226, 175, 0.14);
+    --ink: #f0e2c8;
+    --accent: #e0a24e;
+    --ok: #7ec27a;
+    --danger: #e08a72;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--ink);
+  background-color: var(--wood-page);
+  background-image: var(--texture);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 外壳：标签栏 + 当前页面；整页至少占满一屏 */
+.shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background-color: var(--wood-page);
+  background-image: var(--texture);
+}
+
+/* 页面容器 */
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1rem 1.25rem 2rem;
+}
+
+/* 外壳里的页面撑满剩余高度 */
+.shell > .container {
+  flex: 1;
+}
+
+/* 阅读页不在外壳里，自己占满一屏 */
+.container.reader {
+  min-height: 100vh;
+  gap: 0.6rem;
+}
+
+/* 标签栏已取消：书房本身就是首页，挂件展开页各自带「返回书架」按钮 */
+
+/* 通用控件：木制凸起按钮 + 内凹输入框 */
+input,
+select,
+button,
+progress {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  padding: 0.4rem 0.85rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 8px;
+  background-color: var(--wood-board);
+  background-image: var(--texture);
+  box-shadow: 0 1px 0 var(--wood-hi) inset, 0 2px 4px rgba(30, 18, 8, 0.25);
+  transition: transform 0.08s ease, border-color 0.12s ease, box-shadow 0.08s ease;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: 0 1px 2px rgba(30, 18, 8, 0.3) inset;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.ghost {
+  border-color: transparent;
+  background-image: none;
+  background-color: transparent;
+  box-shadow: none;
+  opacity: 0.8;
+}
+
+button.ghost:hover:not(:disabled) {
+  opacity: 1;
+  border-color: var(--wood-line);
+}
+
+/* 破坏性操作的确认按钮：红色描边 + 红字，与普通按钮区分开 */
+button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+button.danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background-color: rgba(164, 51, 31, 0.14);
+}
+
+input[type="text"],
+input[type="number"],
+input:not([type]),
+select {
+  padding: 0.4rem 0.65rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 8px;
+  background-color: var(--field-bg);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.18) inset;
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 顶栏 / 底栏：一块加厚的木板 */
+.bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 12px;
+  background-color: var(--wood-surface);
+  background-image: var(--texture);
+  box-shadow: var(--shadow-sm);
+}
+
+.bar h1 {
+  font-size: 1.15rem;
+  margin: 0 0.5rem 0 0;
+  text-shadow: 0 1px 0 var(--wood-hi);
+}
+
+.dim {
+  opacity: 0.7;
+  font-size: 0.875rem;
+}
+
+.error {
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
+.notice {
+  color: var(--ok);
+}
+
+/* 确认条里的警示文案（破坏性操作说明），跟错误一样醒目但语气更缓和 */
+.warn {
+  color: var(--danger);
+  font-size: 0.875rem;
+  opacity: 0.9;
+}
+
+/* 搜索条：嵌在木架里的一格 */
+.search {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 12px;
+  background-color: var(--wood-surface);
+  background-image: var(--texture);
+  box-shadow: var(--shadow-sm);
+}
+
+.search input {
+  flex: 1;
+  min-width: 10rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* 书架：竖排书脊 + 木质隔板                                            */
+/* ------------------------------------------------------------------ */
+
+/* 隔板：上沿高光、下沿厚重，做出架子的厚度 */
+.shelf-rack {
+  padding: 1.1rem 0.9rem 0.2rem;
+  border: 1px solid var(--wood-line);
+  border-bottom: 10px solid var(--wood-deep);
+  border-radius: 14px 14px 6px 6px;
+  background-color: var(--wood-board);
+  background-image: var(--texture);
+  box-shadow: 0 2px 0 var(--wood-hi) inset, 0 -10px 18px rgba(0, 0, 0, 0.22) inset,
+    var(--shadow-md);
+}
+
+/* 书脊网格：一行排开多少本由容器宽度决定 */
+.shelf {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0.4rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(4.2rem, 1fr));
+  gap: 0.5rem;
+  align-items: end;
+}
+
+.spine-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+
+/* 书脊本体：竖长条，右侧留出"书页"厚度的高光 */
+.spine {
+  position: relative;
+  overflow: hidden;
+  height: 12rem;
+  padding: 0.7rem 0.35rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--wood-edge);
+  border-radius: 4px 6px 6px 4px;
+  background-color: var(--spine-1);
+  background-image: var(--texture);
+  box-shadow: 0 1px 0 var(--wood-hi) inset, -3px 0 6px rgba(0, 0, 0, 0.18) inset,
+    0 6px 10px rgba(30, 18, 8, 0.35);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+/* 抽出来一点，像把书从架上取下 */
+.spine-card:hover .spine,
+.spine-card:focus-visible .spine {
+  transform: translateY(-4px);
+  box-shadow: 0 1px 0 var(--wood-hi) inset, -3px 0 6px rgba(0, 0, 0, 0.18) inset,
+    0 12px 18px rgba(30, 18, 8, 0.4);
+}
+
+/* 书名竖排：中文自上而下，英文按书脊惯例旋转 90° */
+.spine-title {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  line-height: 1.15;
+  max-height: 8.4rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 0 var(--wood-hi);
+}
+
+.spine-author,
+.spine-tags {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 0.72rem;
+  opacity: 0.72;
+  max-height: 3.4rem;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.spine-tags {
+  font-size: 0.68rem;
+  opacity: 0.6;
+}
+
+/* 书脊底部的进度：一条自下而上的暖色填充 + 百分比小字 */
+.spine-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: linear-gradient(
+    180deg,
+    rgba(224, 162, 78, 0) 0%,
+    rgba(224, 162, 78, 0.5) 100%
+  );
+  border-top: 1px solid rgba(255, 255, 255, 0.28);
+  pointer-events: none;
+}
+
+.spine-read {
+  margin-top: auto;
+  font-size: 0.7rem;
+  opacity: 0.9;
+}
+
+/* 原生 progress 保留（数据绑定不变），视觉上用上面的填充条表达 */
+.spine-progress {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* 书脊下方原来那行小字（行号 / 字数 / 时长 / 上次阅读）已搬进右键菜单，
+   样式一并删掉，见文件末尾的 .book-menu / .book-facts */
+
+/* 相邻书脊换几种封面色与高度，避免整排一模一样 */
+.shelf .spine-card:nth-child(4n + 2) .spine {
+  background-color: var(--spine-2);
+  height: 12.6rem;
+}
+
+.shelf .spine-card:nth-child(4n + 3) .spine {
+  background-color: var(--spine-3);
+  height: 11.4rem;
+}
+
+.shelf .spine-card:nth-child(4n) .spine {
+  background-color: var(--spine-4);
+  height: 12.2rem;
+}
+
+/* 空书架提示 */
+.empty-hint {
+  padding: 1.4rem 0.4rem;
+  text-align: center;
+}
+
+/* 搜索结果：一摞木牌 */
+.hits {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.hits article {
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--wood-line);
+  border-left: 5px solid var(--accent);
+  border-radius: 12px;
+  background-color: var(--wood-surface);
+  background-image: var(--texture);
+  box-shadow: var(--shadow-sm);
+}
+
+.hits h2 {
+  font-size: 1rem;
+  margin: 0 0 0.25rem;
+}
+
+.hits p {
+  margin: 0.15rem 0;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* 统计：木质卡片 + 实体热力方块                                        */
+/* ------------------------------------------------------------------ */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.7rem;
+}
+
+/* 木质卡片：凸起的边框 + 内凹的面板 */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 12px;
+  background-color: var(--wood-surface);
+  background-image: var(--texture);
+  box-shadow: var(--shadow-md);
+}
+
+.card strong {
+  font-size: 1.2rem;
+  text-shadow: 0 1px 0 var(--wood-hi);
+}
+
+/* 每日目标 */
+.goal {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 12px;
+  background-color: var(--wood-surface);
+  background-image: var(--texture);
+  box-shadow: var(--shadow-sm);
+}
+
+.goal .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+/* 通用进度条：暖色填充 */
+progress {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 0.7rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 6px;
+  overflow: hidden;
+  background-color: var(--field-bg);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25) inset;
+}
+
+progress::-webkit-progress-bar {
+  background: transparent;
+}
+
+progress::-webkit-progress-value {
+  background-image: linear-gradient(90deg, #9c6b2f, var(--accent));
+}
+
+.goal progress {
+  width: 100%;
+}
+
+/* 热力图：每行一个星期几，每列一周 */
+.heatmap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0.4rem 0.2rem;
+}
+
+.heat-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.heat-label {
+  width: 1.4rem;
+  text-align: center;
+}
+
+/* 实体小方块：上高光、下阴影，像嵌在木头里的小瓷片 */
+.heat {
+  display: inline-block;
+  width: 1.05rem;
+  height: 1.05rem;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  border-radius: 3px;
+  background-color: #5a4632;
+  background-image: linear-gradient(
+      160deg,
+      rgba(255, 255, 255, 0.5),
+      rgba(255, 255, 255, 0) 45%
+    ),
+    var(--texture);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.32) inset,
+    0 -1px 2px rgba(0, 0, 0, 0.35) inset, 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* 强度 0-4，由暗到亮 */
+.heat-0 {
+  background-color: #5a4632;
+}
+.heat-1 {
+  background-color: #6f6b34;
+}
+.heat-2 {
+  background-color: #8f7a2e;
+}
+.heat-3 {
+  background-color: #c08a33;
+}
+.heat-4 {
+  background-color: #e0a24e;
+}
+
+/* -1 是窗口之外的空白：占位但不可见，保持网格对齐 */
+.heat--1 {
+  opacity: 0;
+}
+
+.heat-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.heat-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* 通用表格（本书累计、数据位置） */
+.table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--wood-line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.table th,
+.table td {
+  text-align: left;
+  padding: 0.4rem 0.7rem;
+  border-bottom: 1px solid var(--wood-line);
+}
+
+.table tbody tr:nth-child(odd) {
+  background-color: var(--surface-2);
+}
+
+.table tr:last-child td {
+  border-bottom: none;
+}
+
+.table th.right,
+.table td.right {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ */
+/* 成就：徽章墙                                                         */
+/* ------------------------------------------------------------------ */
+
+.badges {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 0.8rem;
+}
+
+.badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.9rem 0.7rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 14px;
+  text-align: center;
+  background-color: var(--wood-surface);
+  background-image: var(--texture);
+  box-shadow: var(--shadow-sm);
+}
+
+.badge strong {
+  font-size: 0.95rem;
+}
+
+.badge p {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+/* 已解锁：实体奖牌，暖色描边 */
+.badge.done {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(224, 162, 78, 0.25), var(--shadow-md);
+}
+
+.medal {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.4rem;
+  height: 3.4rem;
+  border-radius: 50%;
+  font-size: 1.6rem;
+  color: #5a3a10;
+  background-image: radial-gradient(circle at 32% 28%, #fff6dd, #e0a24e 55%, #8a5a1c);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset,
+    0 -3px 6px rgba(0, 0, 0, 0.35) inset, 0 4px 8px rgba(0, 0, 0, 0.35);
+}
+
+/* 未解锁：暗色轮廓，不剧透 */
+.badge.locked .medal {
+  color: var(--ink);
+  opacity: 0.55;
+  background-image: radial-gradient(
+    circle at 32% 28%,
+    rgba(255, 255, 255, 0.14),
+    rgba(255, 255, 255, 0.03)
+  );
+  box-shadow: 0 0 0 2px var(--wood-line) inset, 0 3px 6px rgba(0, 0, 0, 0.3);
+}
+
+.badge.locked {
+  filter: saturate(0.3);
+}
+
+/* 徽章里的进度条 */
+.badge-bar {
+  width: 80%;
+  height: 0.5rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 5px;
+  overflow: hidden;
+  background-color: var(--field-bg);
+}
+
+.badge-bar > span {
+  display: block;
+  height: 100%;
+  background-image: linear-gradient(90deg, #9c6b2f, var(--accent));
+}
+
+
+/* ------------------------------------------------------------------ */
+/* 通用分组（设置、数据、成就分类）                                     */
+/* ------------------------------------------------------------------ */
+
+/* 分组卡片：设置页 / 数据页 / 成就分类共用（Data 只用 .group，无需改 TSX） */
+.group,
+.wood-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 14px;
+  background-color: var(--wood-surface);
+  background-image: var(--texture);
+  box-shadow: var(--shadow-md);
+}
+
+.group h2,
+.group h3 {
+  margin: 0.1rem 0;
+}
+
+.group h3 {
+  font-size: 1rem;
+}
+
+/* 卡片里的搜索条不再重复画一层木板 */
+.group .search,
+.wood-card .search {
+  border: none;
+  background-image: none;
+  background-color: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* 设置：分组卡片 + 滑动开关 / 滑块                                     */
+/* ------------------------------------------------------------------ */
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 10px;
+  background-color: var(--surface-2);
+}
+
+.setting-key {
+  flex: 0 0 9.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+.setting-path {
+  margin-left: auto;
+  font-size: 0.75rem;
+}
+
+/* 滑动开关：底层仍是 input[type=checkbox]，只是画成开关 */
+.switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.switch-input {
+  position: absolute;
+  width: 2.8rem;
+  height: 1.5rem;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.switch-track {
+  display: inline-block;
+  width: 2.8rem;
+  height: 1.5rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 999px;
+  background-color: var(--field-bg);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3) inset;
+  transition: background-color 0.15s ease;
+}
+
+.switch-knob {
+  display: block;
+  width: 1.15rem;
+  height: 1.15rem;
+  margin: 0.12rem;
+  border-radius: 50%;
+  background-image: radial-gradient(circle at 35% 30%, #fff9ec, #cbb590);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: transform 0.15s ease;
+}
+
+.switch-input:checked + .switch-track {
+  background-color: var(--accent);
+}
+
+.switch-input:checked + .switch-track .switch-knob {
+  transform: translateX(1.3rem);
+}
+
+.switch-input:focus-visible + .switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 滑块 + 精确数字框 */
+.slider {
+  flex: 1 1 11rem;
+  min-width: 8rem;
+  height: 1.5rem;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+}
+
+.slider::-webkit-slider-runnable-track {
+  height: 0.45rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 5px;
+  background-color: var(--field-bg);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25) inset;
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-top: -0.38rem;
+  border-radius: 50%;
+  background-image: radial-gradient(circle at 35% 30%, #fff9ec, #c69a5c);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+
+.slider-value {
+  flex: 0 0 6rem;
+  width: 6rem;
+}
+
+.text-input {
+  flex: 1 1 12rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* 数据页：分组卡片 + 回执                                              */
+/* ------------------------------------------------------------------ */
+
+.report {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 10px;
+  background-color: var(--surface-2);
+}
+
+.report ul {
+  margin: 0.2rem 0 0;
+  padding-left: 1.2rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* 阅读页：套同一套深木/浅木主题                                         */
+/* ------------------------------------------------------------------ */
+
+.reader .text {
+  flex: 1;
+  padding: 1rem 1.2rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 12px;
+  background-color: var(--wood-surface);
+  background-image: var(--texture);
+  box-shadow: var(--shadow-md);
+  line-height: 1.9;
+}
+
+.reader .text p {
+  margin: 0.35em 0;
+}
+
+.reader .text p.blank {
+  margin: 0.55em 0;
+}
+
+
+/* ================================================================== */
+/* 书房：书架做成一间屋子 —— 数字时钟 / 日历 / 玻璃徽章盒 / 齿轮 / 翻页  */
+/* ================================================================== */
+
+/* 整间屋子锁在一屏内：书多了用左右箭头翻屏，而不是出现滚动条 */
+.study {
+  position: relative;
+  height: 100vh;
+  overflow: hidden;
+  gap: 0.6rem;
+  padding-bottom: 1rem;
+}
+
+/* 数字时钟：和日历 / 徽章盒并排的一格挂件（黑底暖光；纯展示、不可点） */
+.widget.clock {
+  min-width: 6.2rem;
+  padding: 0.55rem 1rem;
+  background-image: none;
+  background-color: rgba(18, 11, 5, 0.78);
+  color: #ffecc8;
+  box-shadow: 0 0 16px rgba(255, 226, 170, 0.3) inset, var(--shadow-md);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+.clock-time {
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-shadow: 0 0 10px rgba(255, 226, 170, 0.65);
+}
+
+.clock-date {
+  font-size: 0.66rem;
+  opacity: 0.72;
+  letter-spacing: 0.06em;
+}
+
+/* 墙面那一栏：日历在左、数字时钟居中、玻璃徽章盒在右 */
+.study-wall {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+/* 挂件通用外观：鼠标移上去时发出白色散光 */
+.widget {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.55rem 1rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 12px;
+  background-color: var(--wood-surface);
+  background-image: var(--texture);
+  box-shadow: var(--shadow-md);
+  transition: box-shadow 0.25s ease, transform 0.18s ease, border-color 0.25s ease;
+}
+
+/* 只有能点的挂件才会发出白色散光；数字时钟是纯展示的一格 */
+.widget:not(.clock):hover {
+  border-color: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 26px 7px rgba(255, 255, 255, 0.72),
+    0 0 60px 16px rgba(255, 255, 255, 0.3), var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.widget-icon {
+  font-size: 1.7rem;
+  line-height: 1;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
+}
+
+.widget-label {
+  font-size: 0.76rem;
+  letter-spacing: 0.14em;
+  opacity: 0.85;
+}
+
+/* 日历挂件：暖色纸面 + 顶部一个挂环 */
+.widget.calendar {
+  background-image: none;
+  background-color: #f3e6cf;
+  color: #4a3524;
+}
+
+.widget.calendar::before {
+  content: "";
+  position: absolute;
+  top: -0.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1.6rem;
+  height: 0.55rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 6px;
+  background-color: var(--wood-deep);
+}
+
+/* 透明玻璃徽章盒：半透 + 磨砂 */
+.widget.badge-box {
+  border-color: rgba(255, 255, 255, 0.5);
+  background-image: none;
+  background-color: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
+}
+
+/* 书架格子里的「＋」：一个空书位，点它弹出系统文件浏览器导入电子书 */
+.spine-card.add-slot {
+  cursor: pointer;
+}
+
+.add-book {
+  flex: 1 1 auto;
+  width: 100%;
+  max-height: 12rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.5rem 0.35rem;
+  border: 1px dashed var(--wood-edge);
+  border-radius: 4px 6px 6px 4px;
+  background-color: rgba(255, 255, 255, 0.05);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+/* 和墙上的挂件一样：鼠标移上去发出白色散光 */
+.add-book:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 22px 6px rgba(255, 255, 255, 0.6), var(--shadow-sm);
+  transform: translateY(-2px);
+}
+
+.add-book:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.add-plus {
+  font-size: 1.9rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* 和书脊一样竖排，一眼看出这是书架上的一个格子 */
+.add-label {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  opacity: 0.8;
+}
+
+/* 上下两层书架贴在一起：中间那道横隔板就是上层的地板 */
+.study .shelf-rack + .shelf-rack {
+  margin-top: -0.4rem;
+}
+
+/* 挂在墙上（成就旁边）的齿轮：黄铜小物件，无底色 / 无边框 / 无阴影 */
+.gear-token {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* 按下时也不要有按钮那套凹陷阴影 */
+.gear-token:active:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+
+.gear-token-icon {
+  display: block;
+  width: 2.4rem;
+  height: 2.4rem;
+  transition: transform 0.45s ease;
+}
+
+/* 悬停：齿轮轻微转过一个齿（45°），像被人拨了一下 */
+.gear-token:hover .gear-token-icon {
+  transform: rotate(45deg);
+}
+
+.gear-token-label {
+  font-size: 0.76rem;
+  letter-spacing: 0.14em;
+  opacity: 0.85;
+}
+
+/* 翻页箭头：贴在窗口中间靠左 / 靠右；默认不显示，指针靠近才出现 */
+.page-arrow {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 6rem;
+  font-size: 2rem;
+  line-height: 1;
+  border: 1px solid var(--wood-line);
+  border-radius: 12px;
+  background-color: rgba(18, 11, 5, 0.5);
+  color: #ffecc8;
+  animation: page-arrow-in 0.18s ease;
+}
+
+.page-arrow.left {
+  left: 0.6rem;
+}
+
+.page-arrow.right {
+  right: 0.6rem;
+}
+
+.page-arrow:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 22px 6px rgba(255, 255, 255, 0.6);
+}
+
+@keyframes page-arrow-in {
+  from {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
+}
+
+/* 分屏信息：贴在书架下方正中 */
+.page-info {
+  margin: 0;
+  text-align: center;
+}
+
+/* 挂件展开页右上角的返回按钮 */
+button.back {
+  margin-left: auto;
+}
+
+/* 搜索结果在书房里自己滚动，不把整间屋子的窗口顶出滚动条 */
+.study .hits {
+  max-height: 30vh;
+  overflow: auto;
+}
+
+/* 书架占满剩余高度：按屏把行高分配掉，永远不出现滚动条 */
+.study .shelf-rack {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+/* 上层是装饰层：矮一些，只占固定高度（上方加了窗，所以从 10.5rem 降到 8.8rem；
+   里面最高的黑胶唱片 6rem、毛绒玩具 5rem（加耳朵 5.9rem）都还放得下） */
+.study .shelf-rack.decor {
+  flex: 0 0 auto;
+  height: 8.8rem;
+  padding-bottom: 0.95rem;
+  border-bottom: none;
+  border-radius: 14px 14px 0 0;
+}
+
+/* 中间那道隔板：白色、带向下的阴影 */
+.study .shelf-rack.decor::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 10px;
+  border-radius: 0 0 5px 5px;
+  background-image: linear-gradient(180deg, #ffffff 0%, #dcd3c4 100%);
+  box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 10px 18px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+/* 下层是书架本身：书和「＋」都在这层 */
+.study .shelf-rack.books {
+  flex: 1;
+}
+
+.study .shelf {
+  flex: 1;
+  min-height: 0;
+  grid-auto-rows: 1fr;
+  overflow: hidden;
+}
+
+/* 空书架：别让空网格把提示顶到最底下 */
+.study .shelf:empty {
+  flex: 0;
+}
+
+/* 书脊贴着隔板下沿，高度由行高决定；上限 12rem 免得书少时被拉成巨无霸 */
+.study .spine-card {
+  justify-content: flex-end;
+}
+
+.study .spine {
+  flex: 1 1 auto;
+  height: auto;
+  max-height: 12rem;
+}
+
+/* 抹平原稿写死的几种书脊高度（保留它给的封面色），改为只影响上限 */
+.study .shelf .spine-card:nth-child(4n + 2) .spine {
+  height: auto;
+  max-height: 11.6rem;
+}
+
+.study .shelf .spine-card:nth-child(4n + 3) .spine {
+  height: auto;
+  max-height: 10.4rem;
+}
+
+.study .shelf .spine-card:nth-child(4n) .spine {
+  height: auto;
+  max-height: 11.9rem;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* 上层架子上的装饰（全都不可点击）：留声机 / 竖着的黑胶唱片 / 收音机   */
+/* ------------------------------------------------------------------ */
+
+.decor-shelf {
+  flex: 1;
+  min-height: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0.4rem;
+  display: flex;
+  align-items: flex-end;
+  gap: 1.6rem;
+}
+
+/* 纯装饰：不发光、不抓手型、也不是按钮 */
+.decor-item {
+  position: relative;
+  cursor: default;
+  filter: drop-shadow(0 6px 8px rgba(0, 0, 0, 0.35));
+}
+
+/* 黑胶唱片：竖着立在架子上，黑胶盘 + 暖色标签 + 中心孔 */
+.decor-item.vinyl {
+  width: 6rem;
+  height: 6rem;
+  border-radius: 50%;
+  border: 1px solid #000;
+  background-image: radial-gradient(
+    circle at 50% 50%,
+    #101010 0 2.55rem,
+    #050505 2.55rem 2.62rem,
+    #131313 2.62rem 2.72rem,
+    #050505 2.72rem 2.8rem,
+    #131313 2.8rem 2.9rem,
+    #060606 2.9rem 100%
+  );
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.14) inset;
+}
+
+.decor-item.vinyl .v-label {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 50%;
+  background-image: radial-gradient(circle at 38% 32%, #f0b45f, #b5651d);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55) inset;
+}
+
+.decor-item.vinyl .v-hole {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background-color: #0a0a0a;
+}
+
+/* 收音机：木壳 + 喇叭格栅 + 两个旋钮 */
+.decor-item.radio {
+  width: 6.6rem;
+  height: 4.2rem;
+  display: flex;
+  align-items: stretch;
+  gap: 0.45rem;
+  padding: 0.5rem;
+  border: 1px solid var(--wood-edge);
+  border-radius: 6px;
+  background-image: linear-gradient(180deg, #7a5333 0%, #4a3220 100%);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.18) inset;
+}
+
+.decor-item.radio .r-grille {
+  flex: 1;
+  border-radius: 4px;
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.55) 0 2px,
+    rgba(255, 255, 255, 0.07) 2px 5px
+  );
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5) inset;
+}
+
+.decor-item.radio .r-knobs {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 0.15rem 0;
+}
+
+.decor-item.radio .r-knob {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 50%;
+  background-image: radial-gradient(circle at 35% 30%, #e8d5b4, #8a6a45);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.6) inset;
+}
+
+/* 留声机：金色喇叭 + 唱臂 + 木底座 */
+.decor-item.gramophone {
+  width: 6.4rem;
+  height: 6rem;
+}
+
+.decor-item.gramophone .g-horn {
+  position: absolute;
+  left: 0.2rem;
+  top: 0;
+  width: 4.2rem;
+  height: 4.2rem;
+  border-radius: 50%;
+  background-image: radial-gradient(
+    circle at 38% 34%,
+    #f7e3b6 0%,
+    #d8b165 55%,
+    #8a6a35 100%
+  );
+  box-shadow: 0 0 0 2px rgba(40, 25, 10, 0.35) inset,
+    -2px 3px 8px rgba(0, 0, 0, 0.45);
+  transform: rotate(-16deg);
+}
+
+.decor-item.gramophone .g-horn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
+  background-color: #2a1c10;
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.85) inset;
+}
+
+.decor-item.gramophone .g-arm {
+  position: absolute;
+  right: 0.5rem;
+  top: 2.2rem;
+  width: 2.4rem;
+  height: 0.22rem;
+  border-radius: 2px;
+  background-image: linear-gradient(90deg, #e8d5b4, #8a6a45);
+  transform: rotate(26deg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.decor-item.gramophone .g-base {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 4.8rem;
+  height: 1.7rem;
+  border-radius: 4px;
+  border: 1px solid var(--wood-edge);
+  background-image: linear-gradient(180deg, #7a5333 0%, #402a1a 100%);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.16) inset;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* 书架右上角：重新同步 / 清空缓存 / 放大镜（搜索打开时变成 ✕）          */
+/* ------------------------------------------------------------------ */
+
+.study-tools {
+  /* 抬到搜索遮罩之上：搜索打开时放大镜变成 ✕，还得能点得到 */
+  position: relative;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.icon-button {
+  width: 2.4rem;
+  height: 2.4rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  line-height: 1;
+  border: 1px solid var(--wood-line);
+  border-radius: 50%;
+  background-color: var(--wood-surface);
+  background-image: var(--texture);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+}
+
+.icon-button:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 20px 5px rgba(255, 255, 255, 0.6), var(--shadow-sm);
+  transform: translateY(-2px);
+}
+
+.icon-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 搜索打开时，放大镜变成 ✕ 并点亮一圈 */
+.icon-button.search-toggle.active {
+  border-color: rgba(255, 255, 255, 0.9);
+  color: #ffecc8;
+  background-image: none;
+  background-color: rgba(18, 11, 5, 0.7);
+  box-shadow: 0 0 18px 5px rgba(255, 255, 255, 0.5);
+}
+
+/* ------------------------------------------------------------------ */
+/* 搜索：整片书架加模糊遮罩 + 从顶部滑下的输入框                         */
+/* ------------------------------------------------------------------ */
+
+.search-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 1rem;
+  background-color: rgba(18, 11, 5, 0.3);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: search-overlay-in 0.18s ease;
+}
+
+.search-panel {
+  width: min(34rem, 84%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.search-input {
+  width: 100%;
+  height: 50px;
+  padding: 0 1.2rem;
+  font-size: 1.05rem;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 999px;
+  background-color: rgba(24, 15, 8, 0.78);
+  color: #ffecc8;
+  box-shadow: 0 0 22px 6px rgba(255, 255, 255, 0.42),
+    0 2px 6px rgba(0, 0, 0, 0.45);
+  animation: search-drop 0.24s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.search-input::placeholder {
+  color: rgba(255, 236, 200, 0.55);
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: #ffffff;
+  box-shadow: 0 0 30px 10px rgba(255, 255, 255, 0.62),
+    0 2px 6px rgba(0, 0, 0, 0.45);
+}
+
+.search-count {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #ffecc8;
+  opacity: 0.85;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+@keyframes search-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-140%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes search-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 回车确认后，命中的书脊发暖光并轻轻跳一下（2 秒后类被移除） */
+.spine-card.highlight .spine {
+  border-color: #ffe9b0;
+  animation: spine-highlight 0.4s ease;
+  box-shadow: 0 0 20px 7px rgba(255, 226, 150, 0.85), 0 1px 0 var(--wood-hi) inset,
+    -3px 0 6px rgba(0, 0, 0, 0.18) inset, 0 12px 18px rgba(30, 18, 8, 0.4);
+}
+
+@keyframes spine-highlight {
+  0% {
+    transform: translateY(0);
+  }
+  55% {
+    transform: translateY(-8px);
+  }
+  100% {
+    transform: translateY(-4px);
+  }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* 书籍卡片：置顶标记 + 右键菜单                                        */
+/* ------------------------------------------------------------------ */
+
+/* 置顶的书：书脊顶端别一枚小图钉 */
+.spine-card.pinned .spine::after {
+  content: "📌";
+  position: absolute;
+  top: 0.15rem;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.8rem;
+  line-height: 1;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+}
+
+/* 浅木色圆角卡片 + 柔和阴影；出现时淡入 + 轻微下落（0.2s） */
+.book-menu {
+  position: fixed;
+  z-index: 30;
+  min-width: 9.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.35rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 12px;
+  background-color: var(--wood-surface);
+  background-image: var(--texture);
+  box-shadow: var(--shadow-md), 0 18px 30px rgba(20, 12, 5, 0.35);
+  animation: book-menu-in 0.2s cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+
+@keyframes book-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.book-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.55rem;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  box-shadow: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+/* 悬停高亮；按下时不要按钮那套凹陷 */
+.book-menu-item:hover:not(:disabled) {
+  border-color: transparent;
+  background-color: rgba(255, 255, 255, 0.16);
+  box-shadow: none;
+  transform: none;
+}
+
+.book-menu-item:active:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+
+/* 内核不支持的操作：变灰、不可点（标题里说明原因） */
+.book-menu-item:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+/* 悬停时图标轻轻晃一下 */
+.book-menu-item:hover:not(:disabled) .book-menu-icon {
+  animation: book-menu-wiggle 0.4s ease;
+}
+
+@keyframes book-menu-wiggle {
+  0% {
+    transform: rotate(0deg);
+  }
+  30% {
+    transform: rotate(-12deg);
+  }
+  60% {
+    transform: rotate(10deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+.book-menu-item.danger {
+  color: var(--danger);
+}
+
+.book-menu-item.danger:hover:not(:disabled) {
+  background-color: rgba(164, 51, 31, 0.16);
+}
+
+.book-menu-icon {
+  width: 1.15rem;
+  text-align: center;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.book-menu-label {
+  font-size: 0.86rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* 书籍弹窗：阅读统计 / 属性 / 删除确认                                  */
+/* ------------------------------------------------------------------ */
+
+.book-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 31;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background-color: rgba(18, 11, 5, 0.45);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  animation: book-dialog-fade 0.18s ease;
+}
+
+.book-dialog {
+  width: min(26rem, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.9rem 1rem 1rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 14px;
+  background-color: var(--wood-surface);
+  background-image: var(--texture);
+  box-shadow: var(--shadow-md), 0 22px 40px rgba(20, 12, 5, 0.45);
+  animation: book-dialog-in 0.2s cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+
+.book-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.book-dialog-head h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 1rem;
+}
+
+.book-dialog-message {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.book-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.2rem;
+}
+
+/* "字段：值"两列（div 用 display:contents 让 dt/dd 直接进网格） */
+.book-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.35rem 0.9rem;
+  margin: 0;
+}
+
+.book-facts > div {
+  display: contents;
+}
+
+.book-facts dt {
+  opacity: 0.7;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.book-facts dd {
+  margin: 0;
+  font-size: 0.9rem;
+  word-break: break-all;
+}
+
+@keyframes book-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes book-dialog-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* 上层架子上的毛绒玩具：那层里唯一能点的一件（点它换动物）              */
+/* ------------------------------------------------------------------ */
+
+/* 这一件自己画阴影 —— .decor-item 的 drop-shadow 会把弹出面板也描一遍，太糊 */
+.decor-item.toy-item {
+  filter: none;
+}
+
+.toy-button {
+  display: block;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+/* 按下时不要按钮那套凹陷效果，弹跳交给里面的毛绒玩具 */
+.toy-button:active:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* 毛绒玩具：纯 CSS 塑形（头 + 身子 + 肚皮 + 四肢 + 尾巴 + 缝线 + 点眼）*/
+/* ------------------------------------------------------------------ */
+
+/* 整只玩具：竖着 4.6 × 5rem —— 头在上、身子居中、四只脚在下 */
+.plush {
+  position: relative;
+  display: block;
+  /* 面板里会被缩放到小按钮里，别让 flex 把它压变形 */
+  flex: none;
+  width: 4.6rem;
+  height: 5rem;
+  /* 一圈软阴影，像软布料坐在架子上（颜色变量由每只动物覆盖） */
+  filter: drop-shadow(0 6px 7px rgba(0, 0, 0, 0.4));
+}
+
+/* 布料底子：细密绒点 + 上暖下深的渐变 —— 头、身子、四肢、尾巴共用 */
+.plush-head,
+.plush-body,
+.plush-ear,
+.plush-arm,
+.plush-leg,
+.plush-tail {
+  background-image:
+    radial-gradient(circle at 2px 2px, rgba(255, 255, 255, 0.2) 1px, transparent 1.6px),
+    linear-gradient(160deg, var(--plush-hi) 0%, var(--plush-mid) 58%, var(--plush-lo) 100%);
+  background-size: 5px 5px, 100% 100%;
+}
+
+/* 头：略扁的圆 */
+.plush-head {
+  position: absolute;
+  left: 50%;
+  top: 0.95rem;
+  width: 2.2rem;
+  height: 1.95rem;
+  transform: translateX(-50%);
+  border-radius: 50% 50% 48% 48% / 52% 52% 48% 48%;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.18) inset;
+  z-index: 3;
+}
+
+/* 身子：上窄下宽的梨形，坐着的姿态 */
+.plush-body {
+  position: absolute;
+  left: 50%;
+  top: 2.35rem;
+  width: 2.75rem;
+  height: 2.35rem;
+  transform: translateX(-50%);
+  border-radius: 46% 46% 44% 44% / 34% 34% 58% 58%;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.18) inset;
+  z-index: 2;
+}
+
+/* 肚皮：比身子浅一块，一眼看出"有身体" */
+.plush-belly {
+  position: absolute;
+  left: 50%;
+  bottom: 0.2rem;
+  width: 1.6rem;
+  height: 1.35rem;
+  transform: translateX(-50%);
+  border-radius: 50% 50% 46% 46% / 52% 52% 48% 48%;
+  background-color: var(--plush-belly);
+  opacity: 0.7;
+}
+
+/* 前爪（猫头鹰是翅膀、乌龟是前鳍） */
+.plush-arm {
+  position: absolute;
+  top: 2.7rem;
+  width: 0.9rem;
+  height: 1.3rem;
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2) inset;
+  z-index: 1;
+}
+
+.plush-arm.l {
+  left: 0.28rem;
+}
+
+.plush-arm.r {
+  right: 0.28rem;
+}
+
+/* 后脚（乌龟是后鳍） */
+.plush-leg {
+  position: absolute;
+  bottom: 0.05rem;
+  width: 1.15rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2) inset;
+  z-index: 4;
+}
+
+.plush-leg.l {
+  left: 0.5rem;
+}
+
+.plush-leg.r {
+  right: 0.5rem;
+}
+
+/* 尾巴：默认是身后一个小毛球（兔子），其它动物各自覆盖 */
+.plush-tail {
+  position: absolute;
+  right: 0.2rem;
+  top: 3.2rem;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  z-index: 0;
+}
+
+/* 耳朵：默认小圆耳，位置与形状由每只动物覆盖 */
+.plush-ear {
+  position: absolute;
+  top: 0.5rem;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2) inset;
+  z-index: 2;
+}
+
+.plush-ear.l {
+  left: 0.45rem;
+}
+
+.plush-ear.r {
+  right: 0.45rem;
+}
+
+/* 中缝缝线：从额头顶缝到眼睛上面（定位在头里） */
+.plush-stitch {
+  position: absolute;
+  left: 50%;
+  top: 6%;
+  height: 26%;
+  width: 2px;
+  transform: translateX(-50%);
+  background-image: repeating-linear-gradient(
+    180deg,
+    rgba(92, 62, 36, 0.5) 0 3px,
+    transparent 3px 7px
+  );
+}
+
+/* 眼睛：一颗带高光的小圆点（左上角有一点反光） */
+.plush-eye {
+  position: absolute;
+  width: 0.44rem;
+  height: 0.44rem;
+  border-radius: 50%;
+  background-color: var(--plush-ink);
+  /* 左上角一小块白色高光：像眼睛里的一点亮 */
+  background-image: radial-gradient(
+    circle at 32% 28%,
+    rgba(255, 255, 255, 0.92) 0 26%,
+    rgba(255, 255, 255, 0) 46%
+  );
+}
+
+.plush-eye.l {
+  left: 17%;
+  top: 38%;
+}
+
+.plush-eye.r {
+  right: 17%;
+  top: 38%;
+}
+
+/* 小鼻子：一个实心小三角 */
+.plush-snout {
+  position: absolute;
+  left: 50%;
+  top: 64%;
+  width: 0;
+  height: 0;
+  transform: translateX(-50%);
+  border-left: 0.26rem solid transparent;
+  border-right: 0.26rem solid transparent;
+  border-top: 0.3rem solid var(--plush-ink);
+}
+
+/* 悬停 / 键盘聚焦：上下轻浮 2~3px，一次弹跳 0.3s，然后歇一下再来 */
+.toy-button:hover .plush,
+.toy-button:focus-visible .plush {
+  animation: toy-bounce 0.9s ease-in-out infinite;
+}
+
+@keyframes toy-bounce {
+  0% {
+    transform: translateY(0);
+  }
+  17% {
+    transform: translateY(-3px);
+  }
+  33% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+
+/* 切换面板：从玩具上方弹出的小圆角卡片，5 个动物横排 */
+.toy-picker {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 0.35rem);
+  transform: translateX(-50%);
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.3rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 999px;
+  background-color: var(--wood-surface);
+  background-image: var(--texture);
+  box-shadow: var(--shadow-md), 0 14px 24px rgba(20, 12, 5, 0.4);
+  animation: toy-picker-in 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+@keyframes toy-picker-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(6px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+.toy-choice {
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  line-height: 1;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: none;
+  box-shadow: none;
+  cursor: pointer;
+  transition: transform 0.12s ease, background-color 0.12s ease;
+}
+
+/* 面板里放的是同一套毛绒造型，缩小后正好填满小圆钮（耳朵比盒子高一点，留点余量） */
+.toy-choice .plush {
+  transform: scale(0.42);
+  transform-origin: center;
+  /* 缩放不改布局盒：不让它溢出去抢相邻按钮的点击 */
+  pointer-events: none;
+}
+
+.toy-choice:hover:not(:disabled) {
+  border-color: transparent;
+  background-color: rgba(255, 255, 255, 0.18);
+  box-shadow: none;
+  transform: translateY(-2px) scale(1.12);
+}
+
+.toy-choice:active:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+
+/* 当前选中的那只：亮一圈 */
+.toy-choice.active {
+  background-color: rgba(255, 255, 255, 0.22);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6) inset;
+}
+
+
+/* ================= 五只动物：身体、耳朵/翅膀/鳍、尾巴 ================= */
+
+/* ---- 兔子：奶白；一对长圆耳 + 两只大后脚 + 圆毛球尾巴 ---- */
+.plush-rabbit {
+  --plush-hi: #f8eedf;
+  --plush-mid: #e7d3b3;
+  --plush-lo: #cbb08a;
+  --plush-belly: #fdf8ef;
+  --plush-ink: #46311f;
+}
+
+.plush-rabbit .plush-ear {
+  top: -0.9rem;
+  width: 1.05rem;
+  height: 2.4rem;
+  border-radius: 50% 50% 42% 42% / 62% 62% 38% 38%;
+}
+
+.plush-rabbit .plush-ear.l {
+  left: 1.15rem;
+  transform: rotate(-8deg);
+}
+
+.plush-rabbit .plush-ear.r {
+  right: 1.15rem;
+  transform: rotate(8deg);
+}
+
+/* 兔子和猫的耳朵里衬一层粉色 */
+.plush-rabbit .plush-ear::after,
+.plush-cat .plush-ear::after {
+  content: "";
+  position: absolute;
+  left: 27%;
+  right: 27%;
+  top: 14%;
+  bottom: 22%;
+  border-radius: inherit;
+  background-color: rgba(214, 145, 145, 0.5);
+}
+
+/* 兔子的后脚特别大 —— 坐着就是两团 */
+.plush-rabbit .plush-leg {
+  width: 1.3rem;
+  height: 0.9rem;
+}
+
+.plush-rabbit .plush-leg.l {
+  left: 0.35rem;
+}
+
+.plush-rabbit .plush-leg.r {
+  right: 0.35rem;
+}
+
+/* ---- 小猫：橘色虎斑；大尖耳（带粉内耳）+ 三道胡须 + 环纹长尾 + 背上虎斑 ---- */
+.plush-cat {
+  --plush-hi: #f8dcae;
+  --plush-mid: #e5ae6d;
+  --plush-lo: #c68a4a;
+  --plush-belly: #fdf0d8;
+  --plush-ink: #46311f;
+  --plush-stripe: rgba(148, 94, 38, 0.6);
+}
+
+/* 耳朵：一对大三角，底边压在头的圆弧里（不能浮空） */
+.plush-cat .plush-ear {
+  top: 0.4rem;
+  width: 1.45rem;
+  height: 1.55rem;
+  border-radius: 0;
+  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+}
+
+.plush-cat .plush-ear.l {
+  left: 1.12rem;
+  transform: rotate(-13deg);
+}
+
+.plush-cat .plush-ear.r {
+  right: 1.12rem;
+  transform: rotate(13deg);
+}
+
+/* 内耳：一块更粉的小三角（被耳朵自己的三角形裁出来） */
+.plush-cat .plush-ear::after {
+  left: 29%;
+  right: 29%;
+  top: 34%;
+  bottom: 6%;
+  background-color: #e9a6a2;
+  opacity: 0.9;
+}
+
+/* 猫的眼睛比默认大一号 */
+.plush-cat .plush-eye {
+  width: 0.5rem;
+  height: 0.5rem;
+}
+
+/* 背上虎斑：几道短横纹 */
+.plush-cat .plush-body::before {
+  content: "";
+  position: absolute;
+  left: 14%;
+  right: 14%;
+  top: 13%;
+  height: 0.5rem;
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--plush-stripe) 0 0.14rem,
+    transparent 0.14rem 0.36rem
+  );
+  border-radius: 0.25rem;
+  opacity: 0.85;
+}
+
+/* 尾巴：翘起来的一条长尾巴，带环纹和浅色尾尖 */
+.plush-cat .plush-tail {
+  right: 0.45rem;
+  top: 2.4rem;
+  width: 0.72rem;
+  height: 2.5rem;
+  border-radius: 50% 50% 45% 45% / 30% 30% 70% 70%;
+  transform: rotate(16deg);
+  transform-origin: bottom center;
+  background-image:
+    repeating-linear-gradient(
+      180deg,
+      var(--plush-stripe) 0 0.13rem,
+      transparent 0.13rem 0.44rem
+    ),
+    radial-gradient(circle at 2px 2px, rgba(255, 255, 255, 0.2) 1px, transparent 1.6px),
+    linear-gradient(160deg, var(--plush-hi) 0%, var(--plush-mid) 58%, var(--plush-lo) 100%);
+  background-size: 100% 100%, 5px 5px, 100% 100%;
+}
+
+/* 尾巴尖上一小截浅色 */
+.plush-cat .plush-tail::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 26%;
+  border-radius: 50% 50% 0 0 / 60% 60% 0 0;
+  background-color: #fdf4e2;
+  opacity: 0.85;
+}
+
+/* 胡须：左右各三根，往头外面探出去一点 */
+.plush-cat .plush-head::after {
+  content: "";
+  position: absolute;
+  left: -12%;
+  right: -12%;
+  top: 60%;
+  height: 0.63rem;
+  background-image:
+    repeating-linear-gradient(180deg, rgba(70, 49, 31, 0.8) 0 1.5px, transparent 1.5px 0.21rem),
+    repeating-linear-gradient(180deg, rgba(70, 49, 31, 0.8) 0 1.5px, transparent 1.5px 0.21rem);
+  background-size: 26% 100%, 26% 100%;
+  background-position: left center, right center;
+  background-repeat: no-repeat, no-repeat;
+  opacity: 0.7;
+}
+
+/* ---- 小狗：棕黄；两只垂耳 + 短翘尾巴 + 大鼻头 ---- */
+.plush-dog {
+  --plush-hi: #f0d6ab;
+  --plush-mid: #d6a76b;
+  --plush-lo: #b3813f;
+  --plush-belly: #fbeed6;
+  --plush-ink: #46311f;
+}
+
+.plush-dog .plush-ear {
+  top: 0.7rem;
+  width: 1.25rem;
+  height: 2rem;
+  border-radius: 50% 50% 46% 46% / 38% 38% 62% 62%;
+}
+
+.plush-dog .plush-ear.l {
+  left: 0.25rem;
+  transform: rotate(15deg);
+}
+
+.plush-dog .plush-ear.r {
+  right: 0.25rem;
+  transform: rotate(-15deg);
+}
+
+/* 尾巴：短短一截，往上翘 */
+.plush-dog .plush-tail {
+  right: 0.3rem;
+  top: 2.75rem;
+  width: 0.6rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  transform: rotate(24deg);
+  transform-origin: bottom center;
+}
+
+.plush-dog .plush-snout {
+  border-left-width: 0.3rem;
+  border-right-width: 0.3rem;
+  border-top-width: 0.36rem;
+}
+
+/* ---- 猫头鹰：暖棕；角羽 + 一对大翅膀 + 细爪 + 短尾 ---- */
+.plush-owl {
+  --plush-hi: #ecd9b6;
+  --plush-mid: #cbaa76;
+  --plush-lo: #a3803f;
+  --plush-belly: #f6e9cf;
+  --plush-ink: #46311f;
+}
+
+.plush-owl .plush-ear {
+  top: 0.45rem;
+  width: 0.9rem;
+  height: 0.95rem;
+  border-radius: 0;
+  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+}
+
+.plush-owl .plush-ear.l {
+  left: 1.05rem;
+  transform: rotate(-15deg);
+}
+
+.plush-owl .plush-ear.r {
+  right: 1.05rem;
+  transform: rotate(15deg);
+}
+
+/* 翅膀：贴着身子两侧的一对大椭圆 */
+.plush-owl .plush-arm {
+  top: 2.5rem;
+  width: 0.8rem;
+  height: 1.9rem;
+  border-radius: 50% 50% 45% 45% / 40% 40% 60% 60%;
+}
+
+.plush-owl .plush-arm.l {
+  left: 0.5rem;
+  transform: rotate(8deg);
+}
+
+.plush-owl .plush-arm.r {
+  right: 0.5rem;
+  transform: rotate(-8deg);
+}
+
+/* 爪子：细小的一对 */
+.plush-owl .plush-leg {
+  width: 0.85rem;
+  height: 0.5rem;
+  bottom: 0.1rem;
+}
+
+.plush-owl .plush-leg.l {
+  left: 0.85rem;
+}
+
+.plush-owl .plush-leg.r {
+  right: 0.85rem;
+}
+
+/* 短尾巴：身子后面一撮 */
+.plush-owl .plush-tail {
+  right: 1.7rem;
+  top: 4.4rem;
+  width: 1.2rem;
+  height: 0.55rem;
+  border-radius: 50%;
+}
+
+.plush-owl .plush-snout {
+  top: 60%;
+  border-left-width: 0.34rem;
+  border-right-width: 0.34rem;
+  border-top-width: 0.42rem;
+}
+
+/* ---- 乌龟：草绿；明显的龟壳分块 + 探出来的小头 + 四只鳍 + 尖尾巴 ---- */
+.plush-turtle {
+  /* 皮肤：浅一档的草绿 */
+  --plush-hi: #dcebc0;
+  --plush-mid: #a9ce80;
+  --plush-lo: #7ea757;
+  --plush-belly: #eaf4d8;
+  --plush-ink: #33501f;
+  /* 壳：深一档，跟皮肤拉开对比 */
+  --plush-shell-hi: #a6c877;
+  --plush-shell-mid: #6d9a46;
+  --plush-shell-lo: #3f6127;
+  --plush-shell-line: rgba(26, 43, 14, 0.6);
+}
+
+/* 头：小一圈、浅一档，从壳里探出来（脖子那截压在壳前面） */
+.plush-turtle .plush-head {
+  top: 1.05rem;
+  width: 1.95rem;
+  height: 1.8rem;
+  background-image:
+    radial-gradient(circle at 2px 2px, rgba(255, 255, 255, 0.24) 1px, transparent 1.6px),
+    linear-gradient(160deg, #e6f2cc 0%, #b8db8e 58%, #8fbc64 100%);
+  background-size: 5px 5px, 100% 100%;
+}
+
+/* 乌龟没有耳朵 */
+.plush-turtle .plush-ear {
+  display: none;
+}
+
+/* 壳：更宽的圆顶 —— 放射状甲片缝 + 一圈生长纹 + 圆顶高光 + 暗壳沿 */
+.plush-turtle .plush-body {
+  top: 2.25rem;
+  width: 3.35rem;
+  height: 2.45rem;
+  border-radius: 50% 50% 42% 42% / 56% 56% 44% 44%;
+  background-image:
+    radial-gradient(circle at 2px 2px, rgba(255, 255, 255, 0.16) 1px, transparent 1.6px),
+    repeating-conic-gradient(
+      from 0deg at 50% 44%,
+      var(--plush-shell-line) 0 3deg,
+      transparent 3deg 30deg
+    ),
+    radial-gradient(
+      circle at 50% 44%,
+      transparent 0 40%,
+      rgba(26, 43, 14, 0.26) 40% 43%,
+      transparent 43%
+    ),
+    radial-gradient(circle at 34% 14%, rgba(255, 255, 255, 0.34), transparent 48%),
+    linear-gradient(165deg, var(--plush-shell-hi) 0%, var(--plush-shell-mid) 55%, var(--plush-shell-lo) 100%);
+  background-size: 5px 5px, 100% 100%, 100% 100%, 100% 100%, 100% 100%;
+  box-shadow:
+    inset 0 0 0 0.09rem rgba(26, 43, 14, 0.45),
+    inset 0 -0.2rem 0.34rem -0.06rem rgba(230, 242, 204, 0.3),
+    0 2px 4px rgba(0, 0, 0, 0.18) inset;
+}
+
+/* 壳上没有肚皮 */
+.plush-turtle .plush-belly {
+  display: none;
+}
+
+/* 前鳍：宽扁的桨，从壳两侧伸出来、往斜下指（外端朝下要负角） */
+.plush-turtle .plush-arm {
+  top: 3.4rem;
+  width: 1.5rem;
+  height: 0.52rem;
+  border-radius: 60% 40% 45% 55% / 70% 70% 30% 30%;
+}
+
+.plush-turtle .plush-arm.l {
+  left: -0.42rem;
+  transform: rotate(-22deg);
+}
+
+.plush-turtle .plush-arm.r {
+  right: -0.42rem;
+  transform: rotate(22deg);
+}
+
+/* 后鳍：小一号的桨，压在壳下沿 */
+.plush-turtle .plush-leg {
+  bottom: 0.05rem;
+  width: 1rem;
+  height: 0.46rem;
+  border-radius: 55% 45% 50% 50% / 65% 65% 35% 35%;
+}
+
+.plush-turtle .plush-leg.l {
+  left: 0.5rem;
+  transform: rotate(-14deg);
+}
+
+.plush-turtle .plush-leg.r {
+  right: 0.5rem;
+  transform: rotate(14deg);
+}
+
+/* 尾巴：壳后面探出来的一个尖 */
+.plush-turtle .plush-tail {
+  right: 0.28rem;
+  top: 4.15rem;
+  width: 0.62rem;
+  height: 0.5rem;
+  border-radius: 0;
+  clip-path: polygon(0 0, 0 100%, 100% 50%);
+}
+
+
+/* ================================================================== */
+/* 书房的天色：墙上的窗 / 白天黑夜 / 台灯（全按系统时间自动切换）           */
+/*                                                                    */
+/* 白天的类名是 .study.day、夜里是 .study.night —— 由 Shelf.tsx 的        */
+/* useSky() 挂在 main 上。这一节里的东西全按这两个前缀写，另外都用        */
+/* z-index: 6 抬到夜里那层幕布（.study.night::after，z-index: 5）之上，   */
+/* 所以天黑下去之后，窗、灯和挂件仍然是亮的。                            */
+/* ================================================================== */
+
+/* ------------------------------------------------------------------ */
+/* 墙上那扇窗：两层天空交叉淡入 + 云 / 月牙 / 星星                        */
+/* ------------------------------------------------------------------ */
+
+.study-window {
+  position: relative;
+  /* 抬到夜里的幕布之上：屋子暗下去时，窗外还是亮的 */
+  z-index: 6;
+  flex: 0 0 auto;
+  align-self: center;
+  /* 窗口矮的时候自己收一点，别把下面的架子挤没了 */
+  height: clamp(4.6rem, 11vh, 6.6rem);
+  width: min(30rem, 74%);
+  overflow: hidden;
+  border: 6px solid var(--wood-deep);
+  border-radius: 12px 12px 5px 5px;
+  background-color: #0d0a1c;
+  box-shadow: 0 1px 0 var(--wood-hi) inset, 0 12px 26px rgba(0, 0, 0, 0.5) inset,
+    var(--shadow-md);
+}
+
+/* 两层天空叠在一起：换天色只改透明度，所以是"渐变"过去的 */
+.study-window .sky {
+  position: absolute;
+  inset: 0;
+  transition: opacity 1.6s ease;
+}
+
+.study-window .sky-day {
+  opacity: 1;
+  background-image: linear-gradient(180deg, #9fcdf3 0%, #c7e6fb 46%, #f0f8ff 100%);
+}
+
+.study-window .sky-night {
+  opacity: 0;
+  background-image: linear-gradient(180deg, #130a2b 0%, #241542 50%, #3d2666 100%);
+}
+
+.study.night .study-window .sky-day {
+  opacity: 0;
+}
+
+.study.night .study-window .sky-night {
+  opacity: 1;
+}
+
+/* 玻璃上的一道反光 + 四角压暗，让玻璃看起来有厚度 */
+.study-window::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(115deg, rgba(255, 255, 255, 0.2) 0 11%, transparent 25%),
+    radial-gradient(ellipse at 50% 50%, transparent 52%, rgba(8, 5, 18, 0.4) 100%);
+  transition: opacity 1.6s ease;
+}
+
+/* 夜里玻璃更暗一点，衬得月色更亮 */
+.study.night .study-window::after {
+  opacity: 0.75;
+}
+
+/* 云：一团椭圆 + 两个鼓包；白天慢慢飘，天一黑就淡出 */
+.study-window .cloud {
+  position: absolute;
+  height: 0.85rem;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.66);
+  filter: blur(3px);
+  transition: opacity 1.6s ease;
+  animation: cloud-drift 54s ease-in-out infinite;
+}
+
+.study-window .cloud::before,
+.study-window .cloud::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  background-color: inherit;
+}
+
+.study-window .cloud::before {
+  left: 16%;
+  top: -0.36rem;
+  width: 0.76rem;
+  height: 0.76rem;
+}
+
+.study-window .cloud::after {
+  right: 18%;
+  top: -0.24rem;
+  width: 0.6rem;
+  height: 0.6rem;
+}
+
+.study-window .cloud.c1 {
+  left: 10%;
+  top: 42%;
+  width: 4.4rem;
+  opacity: 0.42;
+}
+
+.study-window .cloud.c2 {
+  right: 9%;
+  top: 18%;
+  width: 3.2rem;
+  opacity: 0.28;
+  animation-duration: 72s;
+  animation-delay: -14s;
+}
+
+.study.night .study-window .cloud {
+  opacity: 0;
+}
+
+/* 云飘得很慢：来回各挪一点点，像被风推着 */
+@keyframes cloud-drift {
+  0%,
+  100% {
+    transform: translateX(-0.5rem);
+  }
+  50% {
+    transform: translateX(0.5rem);
+  }
+}
+
+/* 月牙：一个整圆被偏移的 inset 阴影"咬"掉一口，剩下右边那道弯钩 */
+.study-window .moon {
+  position: absolute;
+  right: 15%;
+  top: 15%;
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 50%;
+  box-shadow: inset -0.46rem 0.18rem 0 0.12rem #fdf3cd;
+  filter: drop-shadow(0 0 0.5rem rgba(255, 240, 200, 0.5));
+  opacity: 0;
+  transition: opacity 1.6s ease;
+}
+
+.study.night .study-window .moon {
+  opacity: 1;
+  animation: night-breathe 9s ease-in-out infinite;
+}
+
+/* 星星：只在夜里出现，各自错开相位地微闪 */
+.study-window .star {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background-color: #fff6dd;
+  opacity: 0;
+  transition: opacity 1.6s ease;
+}
+
+.study.night .study-window .star {
+  opacity: 0.85;
+  animation: night-breathe 5s ease-in-out infinite;
+}
+
+.study-window .star.s1 {
+  left: 22%;
+  top: 26%;
+  animation-delay: -0.4s;
+}
+
+.study-window .star.s2 {
+  left: 38%;
+  top: 64%;
+  animation-duration: 6.4s;
+  animation-delay: -2.2s;
+}
+
+.study-window .star.s3 {
+  left: 64%;
+  top: 34%;
+  animation-duration: 4.4s;
+  animation-delay: -3.5s;
+}
+
+/* 窗格：一竖一横，木色 + 侧面一点高光 */
+.study-window .window-bar {
+  position: absolute;
+  background-color: var(--wood-deep);
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 250, 235, 0.3) 0%,
+    rgba(0, 0, 0, 0.32) 55%,
+    rgba(255, 250, 235, 0.14) 100%
+  );
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.5);
+}
+
+.study-window .window-bar.v {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 5px;
+  transform: translateX(-50%);
+}
+
+.study-window .window-bar.h {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 4px;
+  transform: translateY(-50%);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* 架子上的台灯：白天是件摆设，天一黑自己亮起来                            */
+/* ------------------------------------------------------------------ */
+
+/* 底座 + 灯杆 + 灯罩，和留声机 / 毛绒玩具一样全用 CSS 塑形 */
+.decor-item.lamp {
+  position: relative;
+  /* 抬到幕布之上：屋子暗下来时，这盏灯是亮的 */
+  z-index: 6;
+  width: 2.7rem;
+  height: 3.2rem;
+}
+
+/* 底座：一个小圆台 */
+.lamp-base {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 1.6rem;
+  height: 0.3rem;
+  border-radius: 45% 45% 35% 35% / 70% 70% 30% 30%;
+  background-image: linear-gradient(170deg, #c49a5c 0%, #7b5426 62%, #4a3014 100%);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 灯杆：一根细黄铜柱 */
+.lamp-stem {
+  position: absolute;
+  left: 50%;
+  bottom: 0.22rem;
+  transform: translateX(-50%);
+  width: 0.15rem;
+  height: 1.25rem;
+  border-radius: 0.08rem;
+  background-image: linear-gradient(90deg, #7d5a2c 0%, #e0b874 45%, #6f4c20 100%);
+}
+
+/* 灯罩：上窄下宽的梯形布罩 */
+.lamp-shade {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  width: 2.6rem;
+  height: 1.6rem;
+  clip-path: polygon(26% 0, 74% 0, 100% 100%, 0 100%);
+  background-image: linear-gradient(180deg, #e3bd77 0%, #c2944a 55%, #9c7133 100%);
+  box-shadow: 0 1px 0 rgba(255, 240, 200, 0.4) inset;
+}
+
+/* 灯罩里侧：白天不亮（透明度 0），夜里点亮 —— 用透明度就能平滑过渡 */
+.lamp-bulb {
+  position: absolute;
+  left: 50%;
+  top: 0.34rem;
+  transform: translateX(-50%);
+  width: 2.1rem;
+  height: 1.16rem;
+  clip-path: polygon(24% 0, 76% 0, 97% 100%, 3% 100%);
+  background-image: radial-gradient(
+    ellipse at 50% 6%,
+    rgba(255, 250, 228, 0.98) 0%,
+    rgba(255, 216, 142, 0.72) 42%,
+    rgba(255, 190, 104, 0.16) 100%
+  );
+  opacity: 0;
+  transition: opacity 1.3s ease;
+}
+
+.study.night .lamp-bulb {
+  opacity: 1;
+  animation: night-breathe 6.5s ease-in-out infinite;
+}
+
+/* 夜里整盏灯往外散一圈暖光 */
+.study.night .decor-item.lamp {
+  filter: drop-shadow(0 6px 8px rgba(0, 0, 0, 0.35))
+    drop-shadow(0 0 0.85rem rgba(255, 214, 150, 0.5));
+}
+
+/* 灯罩本身也在轻微地明灭 —— 像灯丝在跳（只改亮度，不碰透明度，
+   免得和上面灯罩里侧那 1.3s 的点亮过渡打架） */
+.study.night .lamp-shade {
+  animation: lamp-flicker 6.5s ease-in-out infinite;
+}
+
+@keyframes lamp-flicker {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  42% {
+    filter: brightness(1.12);
+  }
+  58% {
+    filter: brightness(0.94);
+  }
+  76% {
+    filter: brightness(1.05);
+  }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* 入夜：整间屋子压暗一档，只剩窗外的月色、台灯和挂件还亮着                 */
+/* ------------------------------------------------------------------ */
+
+/* 夜色幕布：一直存在，白天只是透明度 0 —— 天黑的那一刻会缓缓压下来（1.6s），
+   不是"啪"地跳一下。z-index 5 在书架之上、翻页箭头 / 搜索 / 菜单之下；
+   窗、台灯、挂件都用 z-index: 6 钻到它上面，所以它们不被压暗。 */
+.study::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 1.6s ease;
+  /* 偏紫的夜色 + 台灯那一侧一点点暖调 */
+  background-image: radial-gradient(
+      ellipse 55% 45% at 8% 86%,
+      rgba(255, 206, 138, 0.16),
+      transparent 72%
+    ),
+    linear-gradient(180deg, rgba(11, 6, 24, 0.54) 0%, rgba(9, 5, 20, 0.42) 100%);
+}
+
+.study.night::after {
+  opacity: 1;
+}
+
+/* 台灯照在架子上的那一小块：铺在木板自己的伪元素里、抬到幕布之上，
+   所以它是"亮起来"，而不是被一起压暗（screen 混合 = 光叠在木头上） */
+.shelf-rack.decor::before,
+.shelf-rack.books::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 1.4s ease;
+  mix-blend-mode: screen;
+}
+
+/* 装饰架上：光聚在台灯脚下那一小块（灯是第一件，所以偏左） */
+.shelf-rack.decor::before {
+  background-image: radial-gradient(
+      ellipse 5.2rem 2.4rem at 2.3rem 92%,
+      rgba(255, 216, 152, 0.78) 0%,
+      rgba(255, 200, 124, 0.32) 46%,
+      transparent 76%
+    ),
+    radial-gradient(ellipse 11rem 5rem at 2.8rem 72%, rgba(255, 198, 122, 0.22), transparent 74%);
+}
+
+/* 下层书架：光从上一层漏下来，落在左上角那一片书脊上 */
+.shelf-rack.books::before {
+  background-image: radial-gradient(
+      ellipse 12rem 5.2rem at 3rem 3%,
+      rgba(255, 216, 152, 0.56) 0%,
+      rgba(255, 200, 124, 0.24) 48%,
+      transparent 74%
+    ),
+    radial-gradient(ellipse 24rem 9rem at 4rem 0%, rgba(255, 198, 122, 0.16), transparent 76%);
+}
+
+.study.night .shelf-rack.decor::before,
+.study.night .shelf-rack.books::before {
+  opacity: 1;
+}
+
+/* 墙上的挂件：夜里自己透出光，还在一亮一暗地呼吸 */
+.study.night .widget {
+  position: relative;
+  z-index: 6;
+  animation: night-breathe 7.5s ease-in-out infinite;
+}
+
+.study.night .widget.calendar {
+  box-shadow: 0 0 18px rgba(255, 226, 170, 0.4) inset, 0 0 26px rgba(255, 206, 138, 0.2),
+    var(--shadow-md);
+}
+
+.study.night .widget.clock {
+  box-shadow: 0 0 20px rgba(255, 226, 170, 0.5) inset, 0 0 30px rgba(255, 206, 138, 0.26),
+    var(--shadow-md);
+  animation-duration: 6.5s;
+}
+
+/* 时钟的字在夜里亮得更明显 */
+.study.night .clock-time {
+  text-shadow: 0 0 14px rgba(255, 226, 170, 0.9);
+}
+
+.study.night .widget.badge-box {
+  border-color: rgba(255, 232, 190, 0.55);
+  box-shadow: 0 0 24px rgba(255, 226, 170, 0.34), var(--shadow-md);
+  animation-duration: 9s;
+}
+
+/* 黄铜齿轮：夜里被灯照得发亮 */
+.study.night .gear-token {
+  position: relative;
+  z-index: 6;
+}
+
+.study.night .gear-token-icon {
+  filter: drop-shadow(0 0 0.45rem rgba(255, 214, 150, 0.75));
+  animation: night-breathe 8s ease-in-out infinite;
+}
+
+/* 书脊：夜里像被烛光扫过 —— 一层暖色薄光贴在书脊上慢慢呼吸。
+   相位分三组错开，免得整排一起闪（"只在这里有光"的那种安静感） */
+.spine::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 1.4s ease;
+  background-image: linear-gradient(
+    100deg,
+    rgba(255, 226, 168, 0.34) 0%,
+    rgba(255, 210, 140, 0.12) 44%,
+    transparent 72%
+  );
+}
+
+.study.night .spine::before {
+  opacity: 1;
+  animation: night-breathe 5.6s ease-in-out infinite;
+}
+
+.study.night .spine-card:nth-child(3n + 1) .spine::before {
+  animation-duration: 5.2s;
+  animation-delay: -0.7s;
+}
+
+.study.night .spine-card:nth-child(3n + 2) .spine::before {
+  animation-duration: 6.8s;
+  animation-delay: -2.4s;
+}
+
+.study.night .spine-card:nth-child(3n) .spine::before {
+  animation-duration: 4.8s;
+  animation-delay: -3.9s;
+}
+
+/* 「＋」空书位：夜里也带一点暖光（它在幕布之下，所以只是淡淡地亮） */
+.study.night .add-book {
+  border-color: rgba(255, 214, 150, 0.4);
+  box-shadow: 0 0 18px rgba(255, 206, 130, 0.18), var(--shadow-sm);
+}
+
+/* 毛绒玩具那一格抬到幕布之上：切换面板挂在它里面，不能被夜色压住。
+   玩具自己再压暗一档，看起来才和夜里其他东西一样亮 */
+.study.night .decor-item.toy-item {
+  z-index: 6;
+}
+
+.study.night .toy-item .plush {
+  filter: drop-shadow(0 6px 7px rgba(0, 0, 0, 0.4)) brightness(0.62) saturate(0.88);
+}
+
+/* 夜里所有会发光的东西共用这一条：不是"闪"（那样太吵），
+   而是慢慢一亮一暗地呼吸 */
+@keyframes night-breathe {
+  0%,
+  100% {
+    opacity: 0.78;
+  }
+  38% {
+    opacity: 1;
+  }
+  56% {
+    opacity: 0.66;
+  }
+  74% {
+    opacity: 0.92;
+  }
+}
+
+
+/* ================================================================== */
+/* 点开一本书的过场：抽书 → 横转展示封面 → 停留 3s → 翻页进阅读页          */
+/*                                                                    */
+/* 阶段名就是 .book-stage 上的类名（pull / turn / hold / open / back），    */
+/* 时长跟 BookTransition.tsx 里的常量一一对：0.5 / 0.8 / 3 / 0.5 / 0.45 秒。 */
+/* 全程纯 CSS 3D（perspective + rotateY），没有 three.js，也不加图片。      */
+/* ================================================================== */
+
+/* ------------------------------------------------------------------ */
+/* 阶段 1：被点的那本从架上抽出来，其余书脊退后并变暗                       */
+/* ------------------------------------------------------------------ */
+
+/* 给书架一格透视，里面的 translateZ 才有"往前推"的感觉 */
+.shelf.transitioning {
+  perspective: 820px;
+}
+
+/* 书脊淡入淡出 / 复原也要有过渡 —— 过渡属性写在基础规则上，
+   这样"取消过场"时（transitioning 类被摘掉）同样是缓缓回来的 */
+.shelf .spine-card {
+  transition: opacity 0.45s ease, transform 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+
+.shelf.transitioning .spine-card:not(.pulling) {
+  opacity: 0.4;
+  transform: translateZ(-26px) scale(0.97);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+
+.shelf.transitioning .spine-card.pulling {
+  transition: opacity 0.5s ease;
+}
+
+.shelf.transitioning .spine-card.pulling .spine {
+  transform: translateZ(46px) scale(1.05);
+  box-shadow: 0 1px 0 var(--wood-hi) inset, -3px 0 6px rgba(0, 0, 0, 0.18) inset,
+    0 18px 30px rgba(20, 10, 4, 0.5), 0 0 26px rgba(255, 214, 150, 0.34);
+  transition: transform 0.5s cubic-bezier(0.2, 0.9, 0.3, 1.22), box-shadow 0.5s ease;
+}
+
+/* ------------------------------------------------------------------ */
+/* 整屏遮罩：背景仍是书房，只压一层 0.3 的黑；点它 = 跳过                  */
+/* ------------------------------------------------------------------ */
+
+.book-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.6rem;
+  cursor: pointer;
+  background-color: rgba(0, 0, 0, 0.3);
+  animation: book-stage-in 0.5s ease both;
+}
+
+@keyframes book-stage-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 翻页开始 / 往回飞的时候，遮罩跟着淡掉，让阅读页或书架露出来 */
+.book-stage.open,
+.book-stage.back {
+  background-color: rgba(0, 0, 0, 0);
+  transition: background-color 0.45s ease;
+}
+
+/* ------------------------------------------------------------------ */
+/* 封面卡片：正面封面、背面"第一页"，靠 rotateY 翻过去                      */
+/* ------------------------------------------------------------------ */
+
+.cover-card {
+  position: relative;
+  margin: 0;
+  transform-style: preserve-3d;
+  /* 起始是"侧着"的：从书脊那个角度转正过来。
+     注意：这一层**不能**有 opacity / filter —— 按 CSS Transforms 的
+     "grouping property" 规则，它们会把 preserve-3d 强制压平成 flat，
+     翻页那一下就不是真 3D 了。所以淡入用 visibility、投影放到两个面上。 */
+  visibility: hidden;
+  transform: perspective(1000px) rotateY(90deg) scale(0.86);
+}
+
+/* 阶段 2：转正（这就是"书旋转 90 度，封面朝向用户"） */
+.book-stage.turn .cover-card,
+.book-stage.hold .cover-card,
+.book-stage.open .cover-card {
+  visibility: visible;
+  transform: perspective(1000px) rotateY(0deg) scale(1);
+  transition: transform 0.8s cubic-bezier(0.22, 0.9, 0.28, 1.04);
+}
+
+/* 阶段 4：翻开第一页（0 → -180°），露出背面那张纸 */
+.book-stage.open .cover-card {
+  transform: perspective(1000px) rotateY(-180deg) scale(0.94);
+  transition: transform 0.5s cubic-bezier(0.55, 0.05, 0.7, 0.3);
+}
+
+/* 阶段 5：缩小飞回书脊原位（位移和缩放由 TSX 算好，塞在 CSS 变量里） */
+.book-stage.back .cover-card {
+  visibility: visible;
+  /* 回退时卡片是正着的（back 只在翻页之前允许），压平无所谓，所以这里用淡出 */
+  opacity: 0;
+  transform: perspective(1000px) translate(var(--fly-x), var(--fly-y))
+    scale(var(--fly-scale)) rotateY(0deg);
+  transition: transform 0.45s cubic-bezier(0.5, 0, 0.75, 0.2), opacity 0.45s ease;
+}
+
+/* 卡片的两面：都是绝对定位，翻转时各自朝里 */
+.cover-face {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 3px 7px 7px 3px;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* 正面：封面本体 */
+.cover-front {
+  background-image: linear-gradient(150deg, var(--cover-from) 0%, var(--cover-to) 100%);
+  /* 右侧叠三层浅色，做出"书页厚度"；最后一层是整张卡片的投影 */
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3) inset, 3px 0 0 #efe3cd, 5px 0 0 #ddceb2,
+    7px 0 0 #c6b492, 0 22px 34px rgba(0, 0, 0, 0.5);
+}
+
+/* 有封面图（本地封面文件）：铺满卡片，别拉变形 */
+.cover-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 靠书脊那侧一道压痕 + 高光，和书架上的书脊呼应 */
+.cover-spine-line {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  background-image: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.42) 0%,
+    rgba(255, 255, 255, 0.14) 52%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* 没有封面图时：按书名 hash 出的配色画一张（字体跟主题，字号自适应）         */
+/* ------------------------------------------------------------------ */
+
+.cover-drawn {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 上方一条装饰带，给封面一点"设计感" */
+.cover-band {
+  position: absolute;
+  left: 13%;
+  right: 13%;
+  top: 17%;
+  height: 2px;
+  background-image: linear-gradient(90deg, transparent, var(--cover-accent), transparent);
+  opacity: 0.8;
+}
+
+/* 中央那 1~2 个字：用主题字体，1 个字放大、两个字收一点 */
+.cover-initials {
+  font-family: var(--font);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  color: var(--cover-ink);
+  text-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+}
+
+.cover-initials.one {
+  font-size: clamp(4rem, 20vmin, 7rem);
+}
+
+.cover-initials.two {
+  font-size: clamp(2.7rem, 14vmin, 4.8rem);
+}
+
+/* 底部书名 / 作者：停留阶段才淡入（小字号） */
+.cover-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 2.6rem 1rem 1.05rem;
+  text-align: center;
+  color: var(--cover-ink);
+  background-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.45) 100%);
+  opacity: 0;
+  transition: opacity 0.45s ease;
+  pointer-events: none;
+}
+
+.book-stage.hold .cover-caption,
+.book-stage.open .cover-caption {
+  opacity: 1;
+}
+
+.cover-caption strong {
+  display: block;
+  font-size: 0.96rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.cover-caption span {
+  display: block;
+  margin-top: 0.28rem;
+  font-size: 0.74rem;
+  opacity: 0.78;
+}
+
+/* ------------------------------------------------------------------ */
+/* 背面：翻开的"第一页"（纸色 + 淡淡的横格）                              */
+/* ------------------------------------------------------------------ */
+
+.cover-back {
+  transform: rotateY(180deg);
+  background-color: #f5ecd8;
+  background-image: repeating-linear-gradient(
+    180deg,
+    transparent 0 1.16rem,
+    rgba(120, 96, 60, 0.15) 1.16rem 1.2rem
+  );
+  box-shadow: 0 0 0 1px rgba(110, 86, 52, 0.35) inset, 0 22px 34px rgba(0, 0, 0, 0.45);
+}
+
+/* 第一页顶上"标题"的位置，用一条渐隐的灰线表示 */
+.cover-page-lines {
+  position: absolute;
+  left: 1.7rem;
+  right: 1.7rem;
+  top: 2.3rem;
+  height: 0.55rem;
+  background-image: linear-gradient(90deg, rgba(90, 68, 40, 0.42), transparent 72%);
+}
+
+.cover-page-first {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 1.1rem;
+  text-align: center;
+  font-size: 0.72rem;
+  letter-spacing: 0.3em;
+  color: rgba(90, 68, 40, 0.72);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* 跳进书页里的毛绒玩具（翻页那 0.5 秒里从卡片右下角蹦进去）                  */
+/* ------------------------------------------------------------------ */
+
+.stage-toy {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  /* 和 .plush 一样大（4.6 × 5rem），再挪到屏幕正中 */
+  width: 4.6rem;
+  height: 5rem;
+  margin: -2.5rem 0 0 -2.3rem;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.book-stage.open .stage-toy {
+  animation: toy-jump-in 0.5s cubic-bezier(0.3, 0.75, 0.4, 1) both;
+}
+
+/* 蹦两下：从右下角跳起来，最后扎进书页里缩小消失 */
+@keyframes toy-jump-in {
+  0% {
+    opacity: 0;
+    transform: translate(7.6rem, 8.6rem) scale(0.52) rotate(-10deg);
+  }
+  32% {
+    opacity: 1;
+    transform: translate(3.6rem, 1.2rem) scale(0.64) rotate(7deg);
+  }
+  64% {
+    opacity: 1;
+    transform: translate(1rem, -1.3rem) scale(0.44) rotate(-4deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(0, 0.7rem) scale(0.06);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 底部提示与「返回书架」                                                 */
+/* ------------------------------------------------------------------ */
+
+.stage-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  color: rgba(255, 246, 228, 0.85);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+  opacity: 0;
+  animation: stage-hint-in 0.4s ease 0.7s both;
+}
+
+/* 翻页 / 回退的时候别挡着 */
+.book-stage.open .stage-hint,
+.book-stage.back .stage-hint {
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+@keyframes stage-hint-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.4rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.stage-back {
+  padding: 0.32rem 0.75rem;
+  font-size: 0.74rem;
+  letter-spacing: 0.06em;
+  border: 1px solid rgba(255, 240, 210, 0.5);
+  border-radius: 999px;
+  background-color: rgba(24, 14, 6, 0.55);
+  background-image: none;
+  color: inherit;
+  text-shadow: none;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.stage-back:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 16px rgba(255, 214, 150, 0.45);
+}
+
+.stage-esc {
+  opacity: 0.7;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* 阅读页接上来：从下方淡入，和翻页接得顺一点                              */
+/* ------------------------------------------------------------------ */
+
+.container.reader {
+  animation: reader-in 0.45s ease-out both;
+}
+
+@keyframes reader-in {
+  from {
+    opacity: 0;
+    transform: translateY(1.1rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 限时模式：书脊上的 ⏳、封印时的光点飞散、以及「已归档」页                */
+/* ------------------------------------------------------------------ */
+
+/* 限时书的小时计：只表示"这本书有到期日"，不显示倒计时（到期才告知） */
+.spine-limit {
+  position: absolute;
+  top: 0.28rem;
+  right: 0.26rem;
+  font-size: 0.72rem;
+  line-height: 1;
+  opacity: 0.82;
+  filter: drop-shadow(0 1px 0 var(--wood-hi));
+  pointer-events: none;
+}
+
+/* 封印舞台：钉在书脊原来那一格（fixed，因为书脊随时可能被刷新掉） */
+.seal-stage {
+  position: fixed;
+  z-index: 34;
+  pointer-events: none;
+}
+
+/* 书脊残影：先亮一下再化掉，让"原位"看得出来 */
+.seal-ghost {
+  position: absolute;
+  inset: 0;
+  border-radius: 4px 6px 6px 4px;
+  background-image: linear-gradient(180deg, rgba(255, 236, 190, 0.9), rgba(214, 156, 84, 0.55));
+  box-shadow: 0 0 22px rgba(255, 214, 150, 0.7);
+  animation: seal-ghost-out 0.95s ease-out both;
+}
+
+@keyframes seal-ghost-out {
+  0% {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  22% {
+    opacity: 0.95;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.05) translateY(-10px);
+    filter: blur(3px);
+  }
+}
+
+/* 每颗光点：从书脊中心往外飘，边飘边淡、边放大（方向/延迟见 SealEffect.tsx） */
+.seal-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--seal-size, 4px);
+  height: var(--seal-size, 4px);
+  margin-left: calc(var(--seal-size, 4px) / -2);
+  margin-top: calc(var(--seal-size, 4px) / -2);
+  border-radius: 50%;
+  background-color: #ffe9b8;
+  box-shadow: 0 0 8px rgba(255, 216, 140, 0.9), 0 0 16px rgba(255, 190, 90, 0.45);
+  opacity: 0;
+  animation: seal-dot-out 1.15s ease-out both;
+  animation-delay: var(--seal-delay, 0ms);
+}
+
+@keyframes seal-dot-out {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.4);
+  }
+  18% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--seal-x, 0), var(--seal-y, -60px)) scale(1.15);
+    filter: blur(1.5px);
+  }
+}
+
+/* 轻提示：底部中间淡入、停一会儿、再淡出（3.6s 与 SEAL_TOAST_MS 对齐） */
+.seal-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 2.2rem;
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid rgba(255, 240, 210, 0.4);
+  border-radius: 999px;
+  background-color: rgba(24, 14, 6, 0.78);
+  color: #ffe9c8;
+  font-size: 0.9rem;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+  animation: seal-toast-life 3.6s ease both;
+}
+
+.seal-toast-icon {
+  font-size: 1.05rem;
+}
+
+@keyframes seal-toast-life {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 0.6rem);
+  }
+  12%,
+  82% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 0.4rem);
+  }
+}
+
+/* 齿轮里的页签：设置 / 数据 / 已归档 */
+.desk-tabs {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0.2rem 0 0.6rem;
+}
+
+.desk-tab {
+  padding: 0.3rem 0.9rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 999px;
+  background-color: var(--field-bg);
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.desk-tab.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 「已归档」列表 */
+.archived-dir {
+  font-size: 0.78rem;
+  word-break: break-all;
+}
+
+.archived-list {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.archived-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 10px;
+  background-color: var(--field-bg);
+}
+
+.archived-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.archived-title {
+  font-size: 0.95rem;
+}
+
+.archived-meta {
+  font-size: 0.8rem;
+}
+
+.archived-path {
+  font-size: 0.74rem;
+  word-break: break-all;
+}
+
+/* 限时弹窗：快捷档 + 日期输入 */
+.limit-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.limit-chip {
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 999px;
+  background-color: var(--field-bg);
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.82rem;
+}
+
+.limit-chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.limit-field {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.88rem;
+}
+
+.limit-field input {
+  flex: 1;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 8px;
+  background-color: var(--field-bg);
+  color: inherit;
+  font: inherit;
+}
+

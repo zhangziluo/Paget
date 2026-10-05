@@ -1,0 +1,11 @@
+# Cargo 在这个项目里要用的行为（放在 src-tauri/ 下，跑 cargo 时自动生效）。
+#
+# ⚠️ 必须开这一项：本机是 **rustc 1.87**，而若干传递依赖的最新版要求 1.88
+#    （icu_collections / icu_normalizer 2.3、darling 0.24、time 0.3.4x …）。
+#    cargo 默认"先锁最新版、再检查 rustc"，于是直接报
+#    `error: rustc 1.87.0 is not supported by the following packages`。
+#    设成 fallback 之后，解析阶段就会挑与 `package.rust-version` 兼容的版本，
+#    不用手工 `cargo update -p X --precise Y` 逐个降级。
+#    实测（2026-09-29）：cargo 1.87.0、rustc 1.87.0。
+[resolver]
+incompatible-rust-versions = "fallback"

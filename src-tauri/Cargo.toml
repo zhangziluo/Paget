@@ -1,0 +1,66 @@
+[package]
+name = "paget"
+version = "0.1.0"
+description = "A desktop reader for the werd core (Tauri + React)"
+authors = ["you"]
+edition = "2021"
+# ⚠️ 必须声明：本机是 rustc 1.87，而 cargo 默认会挑最新的传递依赖
+# （icu_* 2.3 / darling 0.24 都要求 1.88）。写了这一行，cargo 才会做
+# MSRV 感知的解析，自动退回到 1.87 能编的版本 —— 否则 `cargo test` 直接
+# 报 "rustc 1.87.0 is not supported by the following packages"。
+rust-version = "1.87"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "paget_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 「限时书到期 → 封印」用到的三件小工具（都已在依赖树里，只是显式声明才能直接调用）：
+#   sha2      —— 归档名取书名的 SHA-256 前 8 位（见 archive.rs 的 title_hash）
+#   flate2    —— zip 里的 deflate 压缩/解压
+#   crc32fast —— zip 每个条目的校验和
+sha2 = "0.10"
+flate2 = "1"
+crc32fast = "1"
+# 本地缓存用的 SQLite 驱动。直接用 sqlx 而不是 tauri-plugin-sql：这样 schema、
+# 中文分词和查询都能在 `cargo test` 里脱离 webview 验证（见 src/db.rs 的模块注释）。
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+
+# macOS 上「＋」按钮弹出的原生文件浏览器（NSOpenPanel）。
+# 不引 tauri-plugin-dialog：它的 open() 只能在"选文件"和"选文件夹"里二选一，
+# 而 NSOpenPanel 能让文件与文件夹同框、还能多选（见 lib.rs 的 pick_import_paths）。
+# 这几个 crate 本来就在依赖树里（wry 用同一版本），只是显式声明才能直接调用。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSOpenPanel",
+    "NSSavePanel",
+    "NSPanel",
+    "NSWindow",
+] }
+
+[dev-dependencies]
+# 集成测试要自己开一个 tokio 运行时（sqlx 的 runtime-tokio 特性需要）
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

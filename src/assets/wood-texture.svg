@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="220" height="220" viewBox="0 0 220 220">
+  <!--
+    一张可平铺的木纹纹理。
+    只用半透明黑/白笔触（不含任何实色），因此叠在浅木底色或深木底色上都成立 ——
+    浅色与深色两套主题共用这一张资产，由 CSS 变量决定底色。
+  -->
+  <g fill="none" stroke="#000000" stroke-linecap="round">
+    <path d="M-5 18 C 45 10, 90 26, 135 16 S 200 8, 225 20" stroke-opacity="0.06" stroke-width="3" />
+    <path d="M-5 54 C 40 62, 95 44, 150 58 S 205 66, 225 50" stroke-opacity="0.05" stroke-width="2" />
+    <path d="M-5 96 C 50 88, 85 106, 140 94 S 200 86, 225 100" stroke-opacity="0.07" stroke-width="4" />
+    <path d="M-5 138 C 45 148, 100 128, 150 142 S 205 150, 225 134" stroke-opacity="0.05" stroke-width="2" />
+    <path d="M-5 178 C 55 170, 90 190, 145 176 S 200 170, 225 184" stroke-opacity="0.06" stroke-width="3" />
+    <path d="M-5 212 C 45 220, 100 204, 150 214 S 205 220, 225 208" stroke-opacity="0.05" stroke-width="2" />
+  </g>
+  <g fill="none" stroke="#ffffff" stroke-linecap="round">
+    <path d="M-5 36 C 50 30, 95 44, 150 34 S 205 28, 225 40" stroke-opacity="0.10" stroke-width="2" />
+    <path d="M-5 78 C 45 86, 100 68, 150 80 S 205 88, 225 74" stroke-opacity="0.08" stroke-width="2" />
+    <path d="M-5 120 C 55 112, 90 130, 145 118 S 200 112, 225 126" stroke-opacity="0.10" stroke-width="2" />
+    <path d="M-5 160 C 45 168, 100 150, 150 162 S 205 168, 225 154" stroke-opacity="0.08" stroke-width="2" />
+  </g>
+</svg>
