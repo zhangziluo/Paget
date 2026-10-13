@@ -251,7 +251,10 @@
   NSIS 语言 `SimpChinese` 且按当前用户装、`upgradeCode` 写死）。没有 Windows 机器时走
   `.github/workflows/windows-installer.yml`（`windows-latest`；内核已在同一仓库里，
   **不再**单独 checkout 第二个仓库；2026-10-13 复核时加了最小权限、`timeout-minutes: 90`、
-  npm / pip 缓存，以及 MSI 之前那个「尽力打开 VBSCRIPT」的 step —— 见 `activeContext.md` 那一节）。
+  npm / pip 缓存，以及 MSI 之前那个「尽力打开 VBSCRIPT」的 step；同一天第一次真跑
+  （推 `v0.1.0` 标签）挂在 `UnicodeEncodeError` —— Windows 上管道走 cp1252，脚本打不出中文与
+  「←」：三个打包脚本各自把 stdio 钉成 UTF-8，工作流再加 `PYTHONIOENCODING: utf-8` 兜底；
+  **冻结点内核不用动**（PyInstaller 换过的 stdio 本来就是 UTF-8）—— 见 `activeContext.md` 那一节）。
   **`.msi` 只能在 Windows 上打**（WiX 只在 Windows 上跑），随包内核也必须在 Windows 上冻
   （PyInstaller 不能交叉编译）—— 本机 macOS 只能验到「配置能被 CLI 读进去 + 脚本跑得通」。
 

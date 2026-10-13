@@ -81,9 +81,10 @@
   建库那天的旧数是 TS/TSX **10,515 行 / 22 个文件**，之后几轮陆续加了
   `readingGuide` / `readerPrefs` / `importFlight` / `shortcuts` / `shelfLayout` / `statsText`
   / `ImportPickMenu` 与新组件；
-  `src-tauri/src/` **3,408 行 / 5 个 `.rs`**；`packaging/` **1,431 行 / 7 个文件**（5 个 `.py` + 1 个 `.sh` + 1 个 `.spec`
-  —— 第十二轮加了 `build_core.py` 306 + `build_windows.py` 226，用来在 Windows 上出 MSI / NSIS）；
-  另有 `src-tauri/tauri.windows.conf.json`（20 行）与 `.github/workflows/windows-installer.yml`（93 行，2026-10-13 复核后）。
+  `src-tauri/src/` **3,408 行 / 5 个 `.rs`**；`packaging/` **1,640 行 / 7 个文件**（5 个 `.py` + 1 个 `.sh` + 1 个 `.spec`
+  —— 第十二轮加了 `build_core.py` + `build_windows.py`，用来在 Windows 上出 MSI / NSIS；
+  2026-10-13 复核：`build_core.py` 326 / `build_windows.py` 229 / `smoke_core.py` 383 行）；
+  另有 `src-tauri/tauri.windows.conf.json`（20 行）与 `.github/workflows/windows-installer.yml`（98 行，2026-10-13 复核后）。
 - 验证实测：`cd src-tauri && cargo test` → **45 passed / 0 failed**（2026-10-10 复核重跑）；
   `npx tsc --noEmit` → **exit 0**（无类型错误）、`npx vite build` ✓（CSS 111.08 kB / JS 365.33 kB，2026-10-10 第二十四轮后）。
 - **Paget 是本地 git 仓库**（2026-10-05 `git init` + 首次提交）：只在本机留历史，**没有远端、不推 GitHub**

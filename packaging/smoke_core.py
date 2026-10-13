@@ -196,6 +196,16 @@ def _methods(core_root: pathlib.Path) -> list:
 
 def main(argv: list) -> int:
     """Run the smoke test against ``argv[1]``."""
+    # 先钉住 stdio 编码：这个脚本打的也是中文（书名 / 正文标题），而 Windows 上输出被
+    # 重定向时 Python 会用系统 ANSI 代码页（英文机器 cp1252），直接抛 UnicodeEncodeError。
+    # 与 build_core.use_utf8_stdio 是同一件事 —— 这里重复三行，是因为本脚本刻意只依赖
+    # 标准库（谁都能单独拿去跑），不为这一处去 import 兄弟脚本。
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8")
+    # 冻结点是子进程：让它也继承 UTF-8 的 stdio（它自己本来就无所谓地区设置，保险而已）
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+
     # 用法：一个参数（二进制路径）
     if len(argv) != 2 or argv[1] in ("-h", "--help"):
         print(__doc__.strip().splitlines()[-1])

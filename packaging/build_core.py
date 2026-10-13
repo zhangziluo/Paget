@@ -195,6 +195,26 @@ def pyinstaller_version(python: str) -> str:
     return probe.stdout.strip()
 
 
+def use_utf8_stdio() -> None:
+    """把 stdio 钉成 UTF-8 —— Windows 上输出被重定向时 Python 不这么做。
+
+    Windows 的 Python 只有在**控制台里**才用 UTF-8（PEP 528）；一旦 stdout 是管道
+    （CI 的日志、`> file`、被别的程序拉起来），它就退回系统 ANSI 代码页 —— 英文机器上
+    是 cp1252，于是这里打的「←」和中文会直接抛 UnicodeEncodeError（GitHub 的
+    windows-latest 上第一次跑 `--check` 就是这么挂的）。日志本来就是 UTF-8，不该由
+    系统区域设置决定，所以：
+
+    1. 把自己这两个流 reconfigure 成 UTF-8（在真控制台里它本来就是 UTF-8，等于没变）；
+    2. 把 PYTHONIOENCODING 写进环境 —— 后面拉起的 PyInstaller / build_core.py /
+       smoke_core.py 都是新进程，继承它才不会各崩各的。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        # 被替换过的流（或 None）没有 reconfigure：跳过，别为它崩
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+
+
 def directory_size(path: Path) -> int:
     """整棵目录的字节数（用来报体积，不引第三方库）。"""
     total = 0
@@ -251,6 +271,9 @@ def python_version(python: str) -> str:
 
 
 def main() -> int:
+    # Windows 上先钉住 stdio 编码：下面要打中文与「←」，而管道 + cp1252 会直接抛异常
+    use_utf8_stdio()
+
     parser = argparse.ArgumentParser(description="冻结内核到 src-tauri/binaries/paget-core/")
     parser.add_argument(
         "--core-root",

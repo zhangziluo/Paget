@@ -134,6 +134,9 @@ def check_msvc() -> str:
 
 
 def main() -> int:
+    # Windows 上先钉住 stdio 编码（同一个坑：管道 + cp1252 打不出中文与「←」）
+    build_core.use_utf8_stdio()
+
     parser = argparse.ArgumentParser(description="Windows 上打 MSI + NSIS 安装包")
     parser.add_argument(
         "--core-root",

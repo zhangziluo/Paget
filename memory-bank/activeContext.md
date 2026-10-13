@@ -241,9 +241,42 @@
 `--ci` 不用加 —— GitHub 自己会设 `CI=true`（`tauri build --help` 里 `--ci  [env: CI=]`）。
 
 **验证**：官方 schema 改完再跑一遍仍是零错误；`cat -n` 逐行核过缩进；README 那段与工作流开头
-（第 10-11 行）现在口径一致（都写「只 checkout 一次、不用第二个仓库 / token」）。
-**没在 GitHub 上真跑** —— 那仍需要先有远端（2026-10-07 定的是不推），与第十二轮「本机没有 Windows」
-是同一个性质的限制。
+（第 10-11 行）现在口径一致（都写「只 checkout 一次、不用第二个仓库 / token」）。当天仓库推到了
+**`github.com/zhangziluo/Paget`**（`main`，首个提交 `5f7bafc`），这条 CI 于是终于能真跑了 ——
+第一次跑就抓到一个真 bug，见下。
+
+### 同一天的第二次反馈：CI 第一次真跑，挂在 `UnicodeEncodeError`
+
+**现象**（推 `v0.1.0` 标签触发）：`python packaging/build_windows.py --check` 在 runner 上直接红：
+
+```
+File "D:\a\Paget\Paget\packaging\build_windows.py", line 166, in main
+    print(f"python  : {python} ({build_core.python_version(python)})  ← 冻内核用")
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2190' in position 35
+```
+
+**根因**（不是「中文不该打」，是「编码不该由系统区域设置决定」）：Windows 的 Python 只有**在控制台里**
+才用 UTF-8（PEP 528）；stdout 一旦是管道（CI 日志、`> file`、被别的程序拉起来），它就退回系统
+ANSI 代码页 —— runner 是英文系统，即 **cp1252**，连「←」都编不出来。本机用
+`PYTHONIOENCODING=cp1252 python3 packaging/build_windows.py --check` **复现出一模一样的 traceback** ✓。
+
+**一个必须分清的边界**（决定要不要动内核）：随包那份 `paget-core` 是 **PyInstaller 冻出来的**，它的
+stdio 由引导器自己换成了 UTF-8 —— 做了个最小冻结实验并直接探冻结点：把 `PYTHONIOENCODING=cp1252`
+塞进去，`stdout.encoding` 仍是 `utf-8`（同一个环境下**普通解释器**就变成 cp1252），协议往来也仍是
+UTF-8 中文。所以**内核不用改**，要改的是那些用**普通解释器**跑的打包脚本。
+
+| 文件 | 改动 |
+| --- | --- |
+| `packaging/build_core.py` | 新增 `use_utf8_stdio()`：① 把 `sys.stdout` / `sys.stderr` `reconfigure` 成 UTF-8；② 把 `PYTHONIOENCODING=utf-8` 写进环境，让后面拉起的 PyInstaller / `smoke_core.py` 一起继承。`main()` 第一行调用 |
+| `packaging/build_windows.py` | `main()` 第一行 `build_core.use_utf8_stdio()`（同一个坑） |
+| `packaging/smoke_core.py` | `main()` 开头同一个三行（**刻意重复而不是 import 兄弟脚本** —— 它一直只依赖标准库） |
+| `.github/workflows/windows-installer.yml` | job `env` 再加 `PYTHONIOENCODING: utf-8` 兜底：`pip` / `PyInstaller` 这些不归我们管的 Python 工具也罩上（脚本自己也各钉了一道） |
+
+**验证**（全在本机按 CI 的条件跑）：`PYTHONIOENCODING=cp1252 python3 packaging/build_windows.py --check`
+→ 中文与「←」正常打印、按设计 `exit=1`；`PYTHONIOENCODING=cp1252 core/.venv/bin/python packaging/build_core.py`
+→ **端到端 PASS**（临时目录冻结 → 装到 `src-tauri/binaries/paget-core/`（38.7 MB）→ `smoke_core.py`
+打完中文书名并 PASS，`exit=0`）；`python -m py_compile` 三个脚本 ✓；工作流 schema 仍 **0 错误**
+（98 行 / 10 个 step）。
 
 ## 本次改动（2026-10-11，第二十九轮）：内核**搬进仓库**（`core/`），界面上不再提 `werd`
 

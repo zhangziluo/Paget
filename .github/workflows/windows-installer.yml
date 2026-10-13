@@ -33,6 +33,11 @@ jobs:
       # 内核默认就在 workspace 里的 core/（build_core.py / paget-core.spec 都认这个默认值）；
       # 这里只把「用哪个 Python 冻」写死成 runner 上那个装了 wreader 的解释器。
       PAGET_CORE_PYTHON: python
+      # 一层保险：Windows 上输出被重定向时 Python 会用系统 ANSI 代码页（runner 是 cp1252），
+      # 打中文或「←」会直接抛 UnicodeEncodeError（第一次跑 `--check` 正是这么挂的）。
+      # packaging/*.py 自己也各钉了一道（见 build_core.use_utf8_stdio）；这一行顺带把
+      # pip / PyInstaller 这些不归我们管的 Python 工具也罩上。
+      PYTHONIOENCODING: utf-8
     steps:
       - name: 取出仓库（前端 + Rust 壳 + core/ 内核都在里面）
         uses: actions/checkout@v4
