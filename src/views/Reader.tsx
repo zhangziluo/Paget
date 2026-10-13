@@ -105,7 +105,7 @@ const AUTOSAVE_MS = 60_000;
 /**
  * 键盘 `1`–`6` 的快捷档：20 档里挑六个均匀落点（`1` 最慢 20s/行 → `6` 最快 0.5s/行）。
  *
- * 主控是顶栏那根滑杆（1–20 随便拖），这里只是「不开顶栏也能换个大概」——
+ * 主控是下栏那颗「档位」里的滑杆（1–20 随便拖），这里只是「不开栏也能换个大概」——
  * 数字键的位置没变（`1` 还是最慢、`6` 还是最快），只是刻度变密之后落点不再是挨着的六格。
  */
 const GUIDE_KEY_PRESETS = [1, 5, 9, 12, 16, 20];
@@ -113,11 +113,11 @@ const GUIDE_KEY_PRESETS = [1, 5, 9, 12, 16, 20];
 /** 拖滑杆换档会连发：进度等手停下来再写一次（毫秒），与排版偏好同一个数。 */
 const GUIDE_SAVE_MS = 400;
 
-/** 顶栏里那四块浮层：Aa（字与页边距）、主题（纸面配色）、速度（光点导读的档位）、
- *  阅读设置（内核 `reader.*` 那一节的翻页与存档）。同一时刻只开一块。 */
+/** 栏里那四块浮层：Aa（字与页边距）、纸色（纸面配色）、档位（光点导读的速度）、
+ *  翻页设置（内核 `reader.*` 那一节的翻页与存档）。同一时刻只开一块。 */
 type Panel = "type" | "theme" | "guide" | "config" | null;
 
-/** 屏幕中间多大一块算「中间区域」——点它呼出 / 收起顶栏（比例，0~1）。 */
+/** 屏幕中间多大一块算「中间区域」——点它呼出 / 收起上下两栏（比例，0~1）。 */
 const MIDDLE_BAND = { xMin: 0.25, xMax: 0.75, yMin: 0.18, yMax: 0.82 };
 
 /**
@@ -176,7 +176,7 @@ export default function Reader(props: {
   const guideSaved = guideStart.current;
   const [guideOn, setGuideOn] = useState(guideSaved.on);
   const [guideSpeed, setGuideSpeed] = useState(guideSaved.speed);
-  // 走在前面的是光点还是下划线（在顶栏那枚速度按钮的浮层里切）
+  // 走在前面的是光点还是下划线（在下栏那颗「档位」的浮层里切）
   const [guideMarker, setGuideMarker] = useState<GuideMarker>(guideSaved.marker);
   // 光点在这批正文里的下标：只有换行时才变（≤ 2 次/秒），字底下那条轨迹跟着它走
   const [guideIndex, setGuideIndex] = useState(0);
@@ -195,7 +195,7 @@ export default function Reader(props: {
   const speedOpen = panel === "guide";
   // 第四块：内核 reader.* 那一节（2026-10-11 从「调一调」搬过来，见 lib/readerConfig.ts）
   const configOpen = panel === "config";
-  // 顶栏默认收着，点屏幕中间才呼出；进来先亮一句提示，几秒后自己消失
+  // 上下两栏默认都收着，点屏幕中间才呼出；进来先亮一句提示，几秒后自己消失
   const [barOpen, setBarOpen] = useState(false);
   const [hintVisible, setHintVisible] = useState(true);
   // pdf 的两种看法：默认**按图片浏览**（见 lib/pdfView.ts），偏好按书存在本机设置里
@@ -261,7 +261,7 @@ export default function Reader(props: {
   // 排版偏好还没读回来之前，别把默认值写进 gui_settings 盖掉用户的设置
   const prefsReady = useRef(false);
   // 点面板外面要能收起它（三块面板都挂在 `.reader-prefs-wrap` 里，用 closest 判断）
-  // 刚点在外面关掉了排版面板：这次 click 只算「关面板」，不再顺手收起顶栏
+  // 刚点在外面关掉了排版面板：这次 click 只算「关面板」，不再顺手收起两栏
   const swallowClick = useRef(false);
   // 挪位置排队：一次只发一份取文请求，其余的记账（见 runTurns）
   const turning = useRef(false);
@@ -332,7 +332,7 @@ export default function Reader(props: {
   // 用户自己滚走之后等手停下来再把光点带到屏顶那一行（滚动中每一帧都重排没必要）
   const guideSyncTimer = useRef(0);
 
-  /** 记下当前位置：ref 给定时器，state 给顶栏与书签。 */
+  /** 记下当前位置：ref 给定时器，state 给上栏与书签。 */
   const setCursor = useCallback((line: number) => {
     cursor.current = line;
     setTopLine(line);
@@ -461,7 +461,7 @@ export default function Reader(props: {
   /**
    * 换档：当前行**重新计时**、不跳行 —— 新档要能从这一行的开头看起。
    *
-   * 拖顶栏那根滑杆时这个函数一秒会被叫几十次（每个 `input` 事件一次），所以进度**等手停下来
+   * 拖下栏那颗「档位」里的滑杆时这个函数一秒会被叫几十次（每个 `input` 事件一次），所以进度**等手停下来
    * 再写**（`GUIDE_SAVE_MS` 防抖，与排版偏好同一个做法）；离开阅读页时那次收尾写盘照旧，
    * 最后停在那一档不会丢。
    */
@@ -516,8 +516,8 @@ export default function Reader(props: {
   /**
    * 跳转 / 翻行之后，把「第几行」亮一下。
    *
-   * 顶栏默认是收着的，跳章或跳到书签之后如果什么提示都没有，读者就不知道自己到哪儿了
-   * （位置感一丢，等于没了上下文）。所以这里在顶栏那个位置短暂亮一枚小牌子。
+   * 两栏默认是收着的，跳章或跳到书签之后如果什么提示都没有，读者就不知道自己到哪儿了
+   * （位置感一丢，等于没了上下文）。所以这里在上栏那个位置短暂亮一枚小牌子。
    */
   const flashPosition = useCallback(
     (line: number) => {
@@ -662,7 +662,7 @@ export default function Reader(props: {
         const batchEnd = current.start + current.lines.length;
         if (batchEnd >= props.book.total_lines || (known !== null && batchEnd >= known)) {
           // 书末（或内核已经取不到下一批）：光点就停在这儿，并说一声
-          // （再按一次 0 键或用顶栏那枚开关可以让它从头再走）
+          // （再按一次 0 键或用下栏那枚开关可以让它从头再走）
           arriveAtEnd();
           return;
         }
@@ -971,7 +971,7 @@ export default function Reader(props: {
       const inside =
         node instanceof Element && node.closest(".reader-prefs-wrap") !== null;
       if (!inside) {
-        // 这次 click 已经被「关面板」用掉了，别让它再顺手收起顶栏
+        // 这次 click 已经被「关面板」用掉了，别让它再顺手收起两栏
         swallowClick.current = true;
         setPanel(null);
       }
@@ -980,7 +980,7 @@ export default function Reader(props: {
     return () => window.removeEventListener("mousedown", onDown);
   }, [panel]);
 
-  // 顶栏默认收着，先亮一句怎么呼出来，几秒后自己消失
+  // 两栏默认都收着，先亮一句怎么呼出来，几秒后自己消失
   useEffect(() => {
     const timer = window.setTimeout(() => setHintVisible(false), 3500);
     return () => window.clearTimeout(timer);
@@ -1031,7 +1031,7 @@ export default function Reader(props: {
   }, [guideIndex, guideMarker, guideOn, guideTrailRows, prefs, slice, placeGuide]);
 
   // 键盘：↑ ↓ 翻一行、← → / 空格 / PgUp / PgDn 滚一屏、1–6 换光点快捷档、0 开关光点导读
-  // （底部那四个按钮就是被它们替掉的；光点档位也能在顶栏那根滑杆上拖）
+  // （底部那四个按钮就是被它们替掉的；光点档位也能在下栏那颗「档位」里拖）
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
@@ -1073,7 +1073,7 @@ export default function Reader(props: {
           }
           break;
         case "Escape":
-          // 先收面板（Aa / 主题 / 速度），再收顶栏
+          // 先收面板（Aa / 纸色 / 档位 / 翻页设置），再收两栏
           if (panel) {
             setPanel(null);
           } else if (barOpen) {
@@ -1081,11 +1081,11 @@ export default function Reader(props: {
           }
           break;
         case "0":
-          // 0 = 开关光点导读（与顶栏那枚开关同一件事）
+          // 0 = 开关光点导读（与下栏那枚开关同一件事）
           toggleGuide();
           break;
         default:
-          // 1–6 = 光点导读的六个快捷档（1 最慢 … 6 最快；细调拖顶栏那根滑杆）；
+          // 1–6 = 光点导读的六个快捷档（1 最慢 … 6 最快；细调拖下栏那颗「档位」里的滑杆）；
           // 带修饰键的组合留给系统（⌘1 之类）
           if (!event.metaKey && !event.ctrlKey && !event.altKey && /^[1-6]$/.test(event.key)) {
             setGuideLevel(GUIDE_KEY_PRESETS[Number(event.key) - 1]);
@@ -1218,13 +1218,13 @@ export default function Reader(props: {
 
   return (
     <main
-      className="container reader"
+      className={`container reader${barOpen ? " bars-open" : ""}`}
       style={paperVars}
       onClick={(event) => {
-        // 顶栏 / 两块面板都是浮层，点它们不算「点屏幕中间」
+        // 上下两栏 / 那几块面板都是浮层，点它们不算「点屏幕中间」
         const node = event.target as HTMLElement | null;
         if (node?.closest(".reader-bar")) return;
-        // 拖选文字松手也会来一次 click，别把顶栏抖出来
+        // 拖选文字松手也会来一次 click，别把两栏抖出来
         const selection = window.getSelection();
         if (selection && !selection.isCollapsed) return;
         // 刚点在外面关掉了面板，这次 click 只当「关面板」
@@ -1245,7 +1245,7 @@ export default function Reader(props: {
         ) {
           return;
         }
-        // 呼出 / 收起顶栏（收起时顺手把面板也带走）
+        // 呼出 / 收起两栏（收起时顺手把面板也带走）
         if (barOpen) {
           setPanel(null);
           setBarOpen(false);
@@ -1255,33 +1255,67 @@ export default function Reader(props: {
         }
       }}
     >
-      {/* 顶栏默认收着，点屏幕中间才滑下来；它是浮层，不占布局，书页不会跳 */}
-      <header className={`bar reader-bar${barOpen ? " open" : ""}`} inert={!barOpen}>
+      {/* 点屏幕中间同时呼出上下两栏（都是浮层，不占布局，书页不会跳）。
+          上栏 = 「这本书现在在哪、要离开还是要换个看法」；读书时要用的家伙全在下栏。 */}
+      <header className="bar reader-bar reader-bar-top" inert={!barOpen}>
         {/* 唯一的退出口：记账（位置 + 书签 + 时长 + 成就）之后再回书架 */}
-        <button className="ghost" onClick={() => void finish()}>
+        <button className="ghost" title="先记好读到哪，再回书架" onClick={() => void finish()}>
           ← 书架
         </button>
         {/* pdf 的另一半：回到图片模式（偏好记在本机，下次开这本还按它） */}
         {isPdf ? (
-          <button className="ghost" title="回到图片模式" onClick={() => switchPdfView("image")}>
+          <button
+            className="ghost"
+            title="这一页按图片看（PDF 的图片模式：不抽文字，翻页按整页走）"
+            onClick={() => switchPdfView("image")}
+          >
             看图片
           </button>
         ) : null}
-        {/* 免手翻：与终端按「a」同一个东西；节奏是「阅读设置」里那四个 reader.auto_scroll_* */}
-        <button
-          className="ghost"
-          title={autoTurn.pace ? `自动翻页：${autoTurn.pace}（顶栏「阅读设置」里改）` : "自动翻页"}
-          onClick={autoTurn.toggle}
-        >
-          {autoTurn.on ? "停止自动" : "自动翻页"}
-        </button>
         <strong>{props.book.title || props.book.id}</strong>
-        <span className="dim">
+        <span className="dim" title="读到这本书的百分之几、正数第几行">
           {percentageOf(topLine, props.book.total_lines).toFixed(1)}% · 第{" "}
           {topLine + 1}/{props.book.total_lines} 行
         </span>
 
+        <button
+          className="ghost"
+          title="把当前这一行存进书库（翻篇 / 离开时会自动存，这枚是手动保险）"
+          onClick={() => void persist()}
+        >
+          保存位置
+        </button>
+        <button
+          className="ghost"
+          title="给这本书建搜索索引：书架里搜正文要用；很长的书只建前半部分"
+          onClick={() => void buildIndex()}
+        >
+          建立索引
+        </button>
+        {/* 底部那四个按钮删掉了，快捷键得写在明面上 */}
+        <span className="dim reader-keys">↑ ↓ 翻行 · ← → / 空格 滚一屏 · 1–6 光点换速</span>
+      </header>
+
+      {/* 下栏：读书时要用的家伙 —— 免手翻、目录与书签（2026-10-13 从上面搬下来的）、
+          光点导读、排版、纸色与翻页设置。上栏管「这本书 / 我在哪」，下栏管「怎么读」 */}
+      <footer className="bar reader-bar reader-bar-bottom" inert={!barOpen}>
+        {/* 免手翻：与终端按「a」同一个东西；节奏是下栏那颗「翻页设置」里那四个
+            reader.auto_scroll_* */}
+        <button
+          className={`ghost${autoTurn.on ? " on" : ""}`}
+          aria-pressed={autoTurn.on}
+          title={
+            autoTurn.on
+              ? `正在自己往前走（${autoTurn.pace}）—— 点一下停下`
+              : "打开后按「翻页设置」里的节奏自己往前走：文字一次走一屏行、PDF 图片模式一次走一页"
+          }
+          onClick={autoTurn.toggle}
+        >
+          {autoTurn.on ? "停止自动" : "自动翻页"}
+        </button>
+        {/* 目录：这本书认出来的章节表（内核按标题的样子认的），选一章就跳过去 */}
         <select
+          title="目录：这本书认出来的章节，选一章跳过去"
           value=""
           onChange={(event) => {
             // 选了章节才跳（空选项只是占位）
@@ -1290,14 +1324,16 @@ export default function Reader(props: {
             }
           }}
         >
-          <option value="">跳到章节…</option>
+          <option value="">跳到某一章…</option>
           {toc.map((entry) => (
             <option key={entry.line} value={entry.line}>
               {entry.title}
             </option>
           ))}
         </select>
+        {/* 书签：自己插过的那些位置（右上角那枚丝带插的就是它们），选一个跳回去 */}
         <select
+          title="书签：你插过的位置，选一个跳回去"
           value=""
           onChange={(event) => {
             // 选了书签才跳
@@ -1306,23 +1342,23 @@ export default function Reader(props: {
             }
           }}
         >
-          <option value="">跳到书签…（{bookmarks.length}）</option>
+          <option value="">跳到我的书签…（{bookmarks.length}）</option>
           {bookmarks.map((mark) => (
             <option key={mark.line} value={mark.line}>
               {mark.label || `第 ${mark.line + 1} 行`}
             </option>
           ))}
         </select>
-        <button onClick={() => void persist()}>保存位置</button>
-        <button className="ghost" onClick={() => void buildIndex()}>
-          建立索引
-        </button>
         {/* 光点导读：沿当前行跟着光读（领路的是光点或兔子；0 开关、1–6 是滑杆上的快捷落点；
             标记 / 档位 / 进度都存本机） */}
         <button
           type="button"
           className={`ghost reader-guide-btn${guideOn ? " on" : ""}`}
-          title={`光点导读：${guideMarkerLabel(guideMarker)} · ${guideSpeedLabel(guideSpeed)}，按 1–6 是六个快捷档、0 开关`}
+          title={
+            guideOn
+              ? `光点导读开着：领路的是「${guideMarkerLabel(guideMarker)}」，${guideSpeedLabel(guideSpeed)}（按 0 关掉、1–6 换挡）`
+              : "光点导读：打开后有一枚小标记沿着你正读的这一行慢慢领读；按 0 开关、1–6 换挡"
+          }
           aria-pressed={guideOn}
           onClick={toggleGuide}
         >
@@ -1337,7 +1373,7 @@ export default function Reader(props: {
           <button
             type="button"
             className={`ghost reader-guide-speed-btn${speedOpen ? " on" : ""}`}
-            title={`光点导读：${guideMarkerLabel(guideMarker)} · ${guideSpeedLabel(guideSpeed)}（点开换标记与速度）`}
+            title={`光点导读：领路的是「${guideMarkerLabel(guideMarker)}」，现在是${guideSpeedLabel(guideSpeed)}（点开换样式、速度与颜色）`}
             aria-label="光点导读的标记与速度"
             aria-expanded={speedOpen}
             onClick={() => setPanel((open) => (open === "guide" ? null : "guide"))}
@@ -1346,6 +1382,10 @@ export default function Reader(props: {
           </button>
           {speedOpen ? (
             <div className="reader-prefs reader-guide-panel" role="group" aria-label="光点导读">
+              {/* 一句话交代：这几项改的是「领路的样子」，只存本机 */}
+              <p className="reader-prefs-lead">
+                领路的是哪一号、走多快、什么颜色 —— 只改这台电脑上的样子，存在本机。
+              </p>
               <div className="pref-row">
                 <span className="pref-label">标记</span>
                 <div className="pref-pill" role="group" aria-label="导读的标记">
@@ -1403,7 +1443,7 @@ export default function Reader(props: {
                 </p>
               ) : null}
               <div className="pref-row">
-                <span className="pref-label">速度</span>
+                <span className="pref-label">走多快</span>
                 <input
                   type="range"
                   min={GUIDE_SPEED_MIN}
@@ -1436,15 +1476,13 @@ export default function Reader(props: {
             </div>
           ) : null}
         </div>
-        {/* 底部那四个按钮删掉了，快捷键得写出来才有人知道 */}
-        <span className="dim reader-keys">↑ ↓ 翻行 · ← → / 空格 滚一屏 · 1–6 光点换速</span>
-
-        {/* 排版：字（字号 / 字重 / 字距）、行距 / 段间距与页边距（界面自己的状态，存本机 gui_settings） */}
+        {/* 排版：字（字多大 / 笔画多粗 / 字与字之间）、行与行、段与段、纸边留白
+            （界面自己的状态，存本机 gui_settings） */}
         <div className="reader-prefs-wrap">
           <button
             type="button"
             className={`ghost reader-prefs-btn${prefsOpen ? " on" : ""}`}
-            title="字号 / 字重 / 字距 / 行距 / 段间距与页边距"
+            title="字多大 / 笔画多粗 / 字与字的间隔 / 一行多高 / 两段之间 / 纸边留白（点开有滑杆）"
             aria-label="阅读排版设置"
             aria-expanded={prefsOpen}
             onClick={() => setPanel((open) => (open === "type" ? null : "type"))}
@@ -1452,7 +1490,11 @@ export default function Reader(props: {
             Aa
           </button>
           {prefsOpen ? (
-            <div className="reader-prefs" role="group" aria-label="阅读排版">
+            <div className="reader-prefs reader-type" role="group" aria-label="阅读排版">
+              {/* 一句话交代：这几项改的是「读起来的样子」，不动书库里的文件 */}
+              <p className="reader-prefs-lead">
+                这几项只改这台电脑上「读起来的样子」—— 书库里的文件一个字都不动。
+              </p>
               {/* 字体：都用本机自带的字体（不联网），每枚按钮**自己就用那款字体**写自己的名字，
                   所以挑的时候一眼能看出差别；窗口窄的时候这一排会自己换行 */}
               <div className="pref-row">
@@ -1474,14 +1516,14 @@ export default function Reader(props: {
                 </div>
               </div>
               <div className="pref-row">
-                <span className="pref-label">字号</span>
+                <span className="pref-label">字多大</span>
                 <input
                   type="range"
                   min={FONT_MIN}
                   max={FONT_MAX}
                   step={1}
                   value={prefs.fontSize}
-                  aria-label="字号"
+                  aria-label="字多大"
                   onChange={(event) =>
                     updatePrefs({ fontSize: Number(event.currentTarget.value) })
                   }
@@ -1493,7 +1535,7 @@ export default function Reader(props: {
                   max={FONT_MAX}
                   step={1}
                   value={prefs.fontSize}
-                  aria-label="字号（像素）"
+                  aria-label="字多大（像素）"
                   onChange={(event) =>
                     updatePrefs({ fontSize: Number(event.currentTarget.value) })
                   }
@@ -1501,14 +1543,14 @@ export default function Reader(props: {
                 <span className="pref-unit">px</span>
               </div>
               <div className="pref-row">
-                <span className="pref-label">字重</span>
+                <span className="pref-label">笔画多粗</span>
                 <input
                   type="range"
                   min={WEIGHT_MIN}
                   max={WEIGHT_MAX}
                   step={WEIGHT_STEP}
                   value={prefs.fontWeight}
-                  aria-label="字重"
+                  aria-label="笔画多粗"
                   onChange={(event) =>
                     updatePrefs({ fontWeight: Number(event.currentTarget.value) })
                   }
@@ -1520,7 +1562,7 @@ export default function Reader(props: {
                   max={WEIGHT_MAX}
                   step={WEIGHT_STEP}
                   value={prefs.fontWeight}
-                  aria-label="字重（100~900）"
+                  aria-label="笔画多粗（100~900）"
                   onChange={(event) =>
                     updatePrefs({ fontWeight: Number(event.currentTarget.value) })
                   }
@@ -1528,14 +1570,14 @@ export default function Reader(props: {
                 <span className="pref-unit">g</span>
               </div>
               <div className="pref-row">
-                <span className="pref-label">字距</span>
+                <span className="pref-label">字与字之间</span>
                 <input
                   type="range"
                   min={LETTER_MIN}
                   max={LETTER_MAX}
                   step={0.1}
                   value={prefs.letterSpacing}
-                  aria-label="字距"
+                  aria-label="字与字之间"
                   onChange={(event) =>
                     updatePrefs({ letterSpacing: Number(event.currentTarget.value) })
                   }
@@ -1547,7 +1589,7 @@ export default function Reader(props: {
                   max={LETTER_MAX}
                   step={0.1}
                   value={prefs.letterSpacing}
-                  aria-label="字距（像素）"
+                  aria-label="字与字之间（像素）"
                   onChange={(event) =>
                     updatePrefs({ letterSpacing: Number(event.currentTarget.value) })
                   }
@@ -1555,14 +1597,14 @@ export default function Reader(props: {
                 <span className="pref-unit">px</span>
               </div>
               <div className="pref-row">
-                <span className="pref-label">行距</span>
+                <span className="pref-label">一行多高</span>
                 <input
                   type="range"
                   min={LINE_MIN}
                   max={LINE_MAX}
                   step={LINE_STEP}
                   value={prefs.lineHeight}
-                  aria-label="行距"
+                  aria-label="一行多高"
                   onChange={(event) =>
                     updatePrefs({ lineHeight: Number(event.currentTarget.value) })
                   }
@@ -1574,7 +1616,7 @@ export default function Reader(props: {
                   max={LINE_MAX}
                   step={LINE_STEP}
                   value={prefs.lineHeight}
-                  aria-label="行距（倍数）"
+                  aria-label="一行多高（倍数）"
                   onChange={(event) =>
                     updatePrefs({ lineHeight: Number(event.currentTarget.value) })
                   }
@@ -1582,14 +1624,14 @@ export default function Reader(props: {
                 <span className="pref-unit">×</span>
               </div>
               <div className="pref-row">
-                <span className="pref-label">段间距</span>
+                <span className="pref-label">两段之间</span>
                 <input
                   type="range"
                   min={PARA_MIN}
                   max={PARA_MAX}
                   step={PARA_STEP}
                   value={prefs.paraSpacing}
-                  aria-label="段间距"
+                  aria-label="两段之间"
                   onChange={(event) =>
                     updatePrefs({ paraSpacing: Number(event.currentTarget.value) })
                   }
@@ -1601,7 +1643,7 @@ export default function Reader(props: {
                   max={PARA_MAX}
                   step={PARA_STEP}
                   value={prefs.paraSpacing}
-                  aria-label="段间距（em）"
+                  aria-label="两段之间（em）"
                   onChange={(event) =>
                     updatePrefs({ paraSpacing: Number(event.currentTarget.value) })
                   }
@@ -1609,7 +1651,7 @@ export default function Reader(props: {
                 <span className="pref-unit">em</span>
               </div>
               <div className="pref-row">
-                <span className="pref-label">左右边距</span>
+                <span className="pref-label">左右留白</span>
                 <input
                   className="pref-num"
                   type="number"
@@ -1617,7 +1659,7 @@ export default function Reader(props: {
                   max={MARGIN_MAX}
                   step={1}
                   value={prefs.marginX}
-                  aria-label="左右边距（像素）"
+                  aria-label="左右留白（像素）"
                   onChange={(event) =>
                     updatePrefs({ marginX: Number(event.currentTarget.value) })
                   }
@@ -1625,7 +1667,7 @@ export default function Reader(props: {
                 <span className="pref-unit">px</span>
               </div>
               <div className="pref-row">
-                <span className="pref-label">上边距</span>
+                <span className="pref-label">上边留白</span>
                 <input
                   className="pref-num"
                   type="number"
@@ -1633,7 +1675,7 @@ export default function Reader(props: {
                   max={MARGIN_MAX}
                   step={1}
                   value={prefs.marginTop}
-                  aria-label="上边距（像素）"
+                  aria-label="上边留白（像素）"
                   onChange={(event) =>
                     updatePrefs({ marginTop: Number(event.currentTarget.value) })
                   }
@@ -1641,7 +1683,7 @@ export default function Reader(props: {
                 <span className="pref-unit">px</span>
               </div>
               <div className="pref-row">
-                <span className="pref-label">下边距</span>
+                <span className="pref-label">下边留白</span>
                 <input
                   className="pref-num"
                   type="number"
@@ -1650,7 +1692,7 @@ export default function Reader(props: {
                   step={1}
                   value={prefs.marginBottom}
                   disabled={prefs.linkY}
-                  aria-label="下边距（像素）"
+                  aria-label="下边留白（像素）"
                   onChange={(event) =>
                     updatePrefs({ marginBottom: Number(event.currentTarget.value) })
                   }
@@ -1664,9 +1706,14 @@ export default function Reader(props: {
                   checked={prefs.linkY}
                   onChange={(event) => updatePrefs({ linkY: event.currentTarget.checked })}
                 />
-                <label htmlFor="reader-margin-y-link">上下边距相等</label>
+                <label htmlFor="reader-margin-y-link">上下留白一样多</label>
               </div>
-              <button type="button" className="ghost" onClick={resetPrefs}>
+              <button
+                type="button"
+                className="ghost"
+                title="字号 / 行距 / 字距 / 留白全回到出厂那一套（纸色与字体不动）"
+                onClick={resetPrefs}
+              >
                 恢复默认
               </button>
             </div>
@@ -1678,17 +1725,21 @@ export default function Reader(props: {
           <button
             type="button"
             className={`ghost reader-prefs-btn${themeOpen ? " on" : ""}`}
-            title="纸面主题与配色"
+            title="纸的样子：四套预设 + 白天 / 夜里 + 自己调底色与字色"
             aria-label="阅读主题设置"
             aria-expanded={themeOpen}
             onClick={() => setPanel((open) => (open === "theme" ? null : "theme"))}
           >
-            主题
+            纸色
           </button>
           {themeOpen ? (
             <div className="reader-prefs reader-theme" role="group" aria-label="纸面主题">
+              {/* 一句话交代：换的是纸的样子，字与版式一个字不动 */}
+              <p className="reader-prefs-lead">
+                换纸的样子 —— 预设只动颜色，字与版式一个字都不动；自定义色盖在预设之上。
+              </p>
               <div className="pref-row">
-                <span className="pref-label">主题</span>
+                <span className="pref-label">纸的样子</span>
                 <div className="pref-pill pref-themes" role="group" aria-label="预设主题">
                   {READER_THEMES.map((item) => (
                     <button
@@ -1705,7 +1756,7 @@ export default function Reader(props: {
                 </div>
               </div>
               <div className="pref-row">
-                <span className="pref-label">亮暗</span>
+                <span className="pref-label">白天或夜里</span>
                 <div className="pref-pill pref-scheme" role="group" aria-label="白天或黑夜">
                   <button
                     type="button"
@@ -1727,7 +1778,7 @@ export default function Reader(props: {
                 <span className="pref-unit">每套两版</span>
               </div>
               <div className="pref-row">
-                <span className="pref-label">背景</span>
+                <span className="pref-label">底色</span>
                 <input
                   className="pref-color"
                   type="color"
@@ -1736,7 +1787,7 @@ export default function Reader(props: {
                   title={`自定义阅读背景色（当前 ${palette.paper}）`}
                   onChange={(event) => updatePrefs({ customBg: event.currentTarget.value })}
                 />
-                <span className="pref-label">字体</span>
+                <span className="pref-label">字色</span>
                 <input
                   className="pref-color"
                   type="color"
@@ -1763,19 +1814,19 @@ export default function Reader(props: {
           ) : null}
         </div>
 
-        {/* 阅读设置：内核 `reader.*` 那一整节（2026-10-11 从「调一调」搬来的 ——
-            正读着书的时候就能调翻页手感、自动翻页的节奏与抽查、终端的一屏与存档口径）。
+        {/* 翻页设置（内核 `reader.*` 那一整节；2026-10-11 从「调一调」搬来，2026-10-13
+            随下栏一起挪到屏幕下方）—— 正读着书的时候就能调自动翻页的节奏与抽查。
             存好一笔就叫一声，自动翻页当场按新节奏走（见 useAutoTurn 的 reload） */}
         <div className="reader-prefs-wrap">
           <button
             type="button"
             className={`ghost reader-prefs-btn${configOpen ? " on" : ""}`}
-            title="翻页手感 / 自动翻页的节奏与抽查 / 存档口径（存进书库设置）"
-            aria-label="阅读设置"
+            title="自动翻页多久走一次、一次走多少、多久抽查一次（改完立刻生效）"
+            aria-label="翻页设置"
             aria-expanded={configOpen}
             onClick={() => setPanel((open) => (open === "config" ? null : "config"))}
           >
-            阅读设置
+            翻页设置
           </button>
           {configOpen ? (
             <ReaderConfigPanel
@@ -1786,16 +1837,16 @@ export default function Reader(props: {
             />
           ) : null}
         </div>
-      </header>
+      </footer>
 
-      {/* 顶栏收着时给一句提示，几秒后自己消失 */}
+      {/* 两栏都收着时给一句提示，几秒后自己消失 */}
       {hintVisible ? (
         <div className="reader-hint" role="status">
-          点屏幕中间呼出工具栏
+          点屏幕中间呼出上下两栏
         </div>
       ) : null}
 
-      {/* 跳转 / 翻行后亮一下位置：顶栏收着时，这是唯一的「我在哪」 */}
+      {/* 跳转 / 翻行后亮一下位置：两栏都收着时，这是唯一的「我在哪」 */}
       {posChip && !barOpen ? (
         <div className="reader-pos" role="status">
           {posChip}
@@ -1807,7 +1858,7 @@ export default function Reader(props: {
         <button
           type="button"
           className="auto-chip"
-          title="点一下打开「阅读设置」，在那里改自动翻页的节奏"
+          title="点一下打开下栏那颗「翻页设置」，在那里改自动翻页的节奏"
           onClick={() => {
             setBarOpen(true);
             setPanel("config");
@@ -1837,7 +1888,7 @@ export default function Reader(props: {
         </div>
       ) : null}
 
-      {/* 一次性消息做成底部浮字：顶栏收着也看得见，而且不挤动书页 */}
+      {/* 一次性消息做成底部浮字：两栏收着也看得见，而且不挤动书页 */}
       <div className="reader-toasts" aria-live="polite">
         {error ? <p className="toast error">{error}</p> : null}
         {notice ? <p className="toast notice">{notice}</p> : null}

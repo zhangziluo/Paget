@@ -712,24 +712,76 @@ progress::-webkit-progress-value {
 /* 阅读页：拟物的一本书 —— 书页堆叠 / 最下面的厚底 / 书口那一叠           */
 /* ------------------------------------------------------------------ */
 
-/* 顶栏是「呼出来的浮层」：默认收在屏幕上方，点屏幕中间才滑下来。
-   绝对定位 → 不占布局，呼出 / 收起时书页不会跳一下。 */
+/* 上下两栏都是「呼出来的浮层」：默认收在屏幕外，点屏幕中间才滑进来。
+   绝对定位 → 不占布局，呼出 / 收起时书页不会跳一下。
+   上栏（`.reader-bar-top`）从上面下来、管「这本书 / 我在哪」；下栏（`.reader-bar-bottom`）
+   从下面升上来、管「怎么读」（目录与书签 2026-10-13 从上面搬到了下栏）。 */
 .reader-bar {
   position: absolute;
   z-index: 10;
-  top: 1rem;
   left: 1.25rem;
   right: 1.25rem;
   opacity: 0;
-  transform: translateY(calc(-100% - 1.5rem));
   pointer-events: none;
   transition: opacity 0.2s ease, transform 0.26s cubic-bezier(0.2, 0.9, 0.3, 1);
+  /* 与书架那张右键卡片（`.book-menu`）同一套木料：同底色 / 同纹理 / 同一种厚一点的投影，
+     所以一呼出来就与书架是一家人 */
+  border-radius: 14px;
+  box-shadow: var(--shadow-md), 0 10px 22px rgba(20, 12, 5, 0.28);
+}
+
+.reader-bar-top {
+  top: 1rem;
+  transform: translateY(calc(-100% - 1.5rem));
+}
+
+.reader-bar-bottom {
+  bottom: 1rem;
+  transform: translateY(calc(100% + 1.5rem));
 }
 
 .reader-bar.open {
   opacity: 1;
   transform: none;
   pointer-events: auto;
+}
+
+/* 栏里那几枚动作钮：与书架右键菜单的行同一种手感（平时只是一行字，悬停才亮起来）——
+   不再用通用那套「凸起的小木牌」，两块木头因此与书架看着是一家人 */
+.reader-bar > button,
+.reader-prefs-wrap > button,
+.reader-prefs > button {
+  padding: 0.34rem 0.62rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  opacity: 1;
+  transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+
+.reader-bar > button:hover:not(:disabled),
+.reader-prefs-wrap > button:hover:not(:disabled),
+.reader-prefs > button:hover:not(:disabled) {
+  border-color: transparent;
+  background-color: rgba(255, 255, 255, 0.16);
+  box-shadow: none;
+  transform: none;
+}
+
+.reader-bar > button:active:not(:disabled),
+.reader-prefs-wrap > button:active:not(:disabled),
+.reader-prefs > button:active:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+
+/* 开着的那几枚（自动翻页 / 光点导读 / 档位 / Aa / 纸色 / 翻页设置）：木色描一道亮边 */
+.reader-bar > button.on,
+.reader-prefs-wrap > button.on {
+  border-color: var(--accent);
+  background-color: rgba(181, 101, 29, 0.16);
 }
 
 /* 面板里那种小胶囊（主题 / 亮暗都用它） */
@@ -781,7 +833,7 @@ progress::-webkit-progress-value {
   border-color: var(--accent);
 }
 
-/* 顶栏上的光点导读开关：开着时也描一道强调色的边（和 Aa 那枚同一个做法） */
+/* 栏里的光点导读开关：开着时也描一道强调色的边（和 Aa 那枚同一个做法） */
 .reader-guide-btn.on {
   border-color: var(--accent);
 }
@@ -848,6 +900,25 @@ progress::-webkit-progress-value {
   box-shadow: var(--shadow-md);
 }
 
+/* 下栏的面板往上长（它自己贴在屏幕底边）；上栏的照旧往下长 */
+.reader-bar-bottom .reader-prefs {
+  top: auto;
+  bottom: calc(100% + 0.45rem);
+}
+
+/* 面板顶上那句交代（「这几项只改这台电脑上的样子」这种，与翻页设置面板的 lead 同一个做法） */
+.reader-prefs-lead {
+  margin: 0 0 0.1rem;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  opacity: 0.8;
+}
+
+/* 排版面板最宽：那一列名字现在是大白话（「字与字之间」这种），得给名字留地方 */
+.reader-prefs.reader-type {
+  width: min(23rem, 88vw);
+}
+
 .pref-row {
   display: flex;
   align-items: center;
@@ -858,6 +929,11 @@ progress::-webkit-progress-value {
   flex: 0 0 3.8rem;
   font-size: 0.85rem;
   opacity: 0.85;
+}
+
+/* 阅读页面板里的名字列放宽一点：写的是大白话（「字与字之间」「白天或夜里」），别挤成两行 */
+.reader-prefs .pref-label {
+  flex: 0 0 6.4rem;
 }
 
 .pref-row input[type="range"] {
@@ -888,7 +964,7 @@ progress::-webkit-progress-value {
   align-self: flex-start;
 }
 
-/* 排版面板里的胶囊：比顶栏那些再小一号（四套主题要塞得下，左右再收一点） */
+/* 排版面板里的胶囊：比栏里那些再小一号（四套主题要塞得下，左右再收一点） */
 .reader-prefs .pref-pill button {
   padding: 0.2rem 0.6rem;
   font-size: 0.85rem;
@@ -1269,7 +1345,7 @@ progress::-webkit-progress-value {
   }
 }
 
-/* 一次性消息：贴在屏幕下方的浮字（顶栏收着时也看得见，且不挤动书页） */
+/* 一次性消息：贴在屏幕下方的浮字（两栏收着时也看得见，且不挤动书页） */
 .reader-toasts {
   position: absolute;
   z-index: 12;
@@ -1282,6 +1358,11 @@ progress::-webkit-progress-value {
   max-width: min(46rem, 86vw);
   transform: translateX(-50%);
   pointer-events: none;
+}
+
+/* 下栏呼出来时把浮字抬起来：两块木头都在屏幕下沿，别让消息压在按钮上 */
+.reader.bars-open .reader-toasts {
+  bottom: 4.4rem;
 }
 
 .reader-toasts .toast {

@@ -50,7 +50,16 @@
 ## 本目录现状（2026-10-05 建库快照；规模与验证两行 2026-10-07 复核）
 
 - 建立于 **2026-10-05**，由当时的会话依据实际代码、`cargo test` 与 `tsc --noEmit` 生成。
-- 规模实测（2026-10-10 复核，随第二十四轮「波浪线导读」再核一遍）：
+- 规模实测（2026-10-13 复核，随第三十轮「阅读页拆成上下两栏」再核一遍）：
+  `src/`（TS/TSX）**13,533 行 / 41 个文件**、`src/`（CSS）**8,308 行 / 9 个文件**
+  （`App.css` 5,572 + `styles/manage-mode.css` 562 + `styles/settings-page.css` 525 +
+  `styles/stats-page.css` 516 + `styles/achievements.css` 503 + `styles/sticky-note.css` 288 +
+  `styles/pdf-pages.css` 130 + `styles/reader-config.css` 122 + `styles/auto-turn.css` 90），
+  另有资产 `src/assets/`（`wood-texture.svg` 21 行 / 1.5 kB、`guide-wave.svg` 19 行 / 1.2 kB）。
+  第三十轮：`views/Reader.tsx` 1,943 → **1,994 行**、`App.css` 5,491 → **5,572 行**、
+  `components/PdfReader.tsx` 438 → **439 行**；`lib/readerConfig.ts`（111 行）、
+  `lib/settingsText.ts`（199 行）、`components/ReaderConfigPanel.tsx`（128 行）只改措辞与注释、行数未变。
+  第二十四轮（旧计数，随后几轮又涨了）：
   `src/`（TS/TSX）**11,765 行 / 32 个文件**、`src/`（CSS）**7,891 行 / 6 个文件**
   （`App.css` 5,488 + `styles/manage-mode.css` 562 + `styles/stats-page.css` 516 +
   `styles/settings-page.css` 534 + `styles/achievements.css` 503 + `styles/sticky-note.css` 288），

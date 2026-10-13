@@ -302,8 +302,9 @@ export default function PdfReader(props: {
 
   return (
     <div className="pdf-view">
-      {/* 顶栏：默认展开（让「转换成文字」第一眼就看得见），按右上那颗按钮收起 */}
-      <header className={`bar reader-bar${barOpen ? " open" : ""}`} inert={!barOpen}>
+      {/* 顶栏：默认展开（让「转换成文字」第一眼就看得见），按右上那颗按钮收起。
+          位置类名 `.reader-bar-top` 与文字阅读页的上栏共用一套「呼出来的浮层」样式 */}
+      <header className="bar reader-bar reader-bar-top" inert={!barOpen}>
         {/* 唯一的退出口：记账（位置 + 时长 + 成就）之后再回书架 */}
         <button className="ghost" onClick={() => void finish()}>
           ← 书架
@@ -344,18 +345,18 @@ export default function PdfReader(props: {
         >
           {autoTurn.on ? "停止自动" : "自动翻页"}
         </button>
-        {/* 阅读设置：内核 `reader.*` 里与阅读有关的那几项（与文字阅读页同一份）。
+        {/* 翻页设置：内核 `reader.*` 里与阅读有关的那几项（与文字阅读页同一份）。
             图片模式正读着的时候也能调节奏，不用先切到文字那一档 */}
         <div className="reader-prefs-wrap">
           <button
             type="button"
             className={`ghost reader-prefs-btn${panel === "config" ? " on" : ""}`}
-            title="翻页手感 / 自动翻页的节奏与抽查 / 存档口径（存进书库设置）"
-            aria-label="阅读设置"
+            title="自动翻页多久走一次、一次走多少、多久抽查一次（改完立刻生效）"
+            aria-label="翻页设置"
             aria-expanded={panel === "config"}
             onClick={() => setPanel((open) => (open === "config" ? null : "config"))}
           >
-            阅读设置
+            翻页设置
           </button>
           {panel === "config" ? (
             <ReaderConfigPanel

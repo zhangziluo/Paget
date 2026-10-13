@@ -2,18 +2,18 @@
  * 内核设置的分工层（纯函数，不碰 DOM、不碰内核）。
  *
  * 只回答一件事：**哪一项在界面上露面、露在哪儿**。分界线只有这一处 ——
- * 「调一调」与阅读页顶栏的「阅读设置」都从这里取，谁也别自己写一份 `startsWith`。
+ * 「调一调」与阅读页下栏的「翻页设置」都从这里取，谁也别自己写一份 `startsWith`。
  *
  * 三档（2026-10-11 定）：
  *
- * 1. **`reader`：阅读页顶栏那颗「阅读设置」里**（`READER_PANEL_KEYS`）—— 界面真的会读、
+ * 1. **`reader`：阅读页下栏那颗「翻页设置」里**（`READER_PANEL_KEYS`）—— 界面真的会读、
  *    而且正读着书的时候想调的那几项（自动翻页的节奏与抽查）。
  * 2. **`app`：留在「调一调」**（统计的小目标与联网、正文放哪儿、章节怎么认）。
  * 3. **`hidden`：界面上一个都不列**（`CLI_ONLY`）—— 它们只影响命令行阅读器。
  *    用户不需要去调它，界面上也就不必提它（列表之外的新设置照旧会显示，只是没有措辞）。
  *
  * 内核 `reader.*` 那一节里绝大多数属于第 3 档：那批是内核自带命令行前端的按键手感，
- * 界面一个都不读（界面的手感走阅读页顶栏的 `Aa` 与本机 `gui_settings`）。
+ * 界面一个都不读（界面的手感走阅读页下栏的 `Aa` 与本机 `gui_settings`）。
  */
 import { settingWords } from "./settingsText";
 
@@ -60,7 +60,7 @@ export function isVisibleSetting(path: string): boolean {
  * 三摞都照内核给的顺序。
  */
 export function partitionSettings(paths: string[]): {
-  /** 阅读页顶栏「阅读设置」里的 */
+  /** 阅读页下栏「翻页设置」里的 */
   reader: string[];
   /** 「调一调」里的 */
   app: string[];
@@ -93,7 +93,7 @@ export function readerSections(paths: string[]): ReaderSettingSection[] {
     {
       title: "自动翻页",
       plain:
-        "顶栏那颗「自动翻页」按这里的节奏走 —— 文字一次走「屏幕行」，PDF 的图片模式一次走一页。",
+        "下栏那颗「自动翻页」按这里的节奏走 —— 文字一次走「屏幕行」，PDF 的图片模式一次走一页。",
       paths: rows,
     },
   ];
