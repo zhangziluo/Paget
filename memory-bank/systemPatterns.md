@@ -5,7 +5,7 @@
 ```
 ┌────────────────┐  invoke  ┌──────────────────┐  stdin/stdout  ┌────────────────────────┐
 │ React  src/    │ ───────▶ │ Rust src-tauri/  │ ── 一行一个 JSON ─▶│ python -m wreader.serve│
-│ 书房 / 阅读页   │ ◀─────── │  lib.rs          │ ◀──────────────  │ ~/.wreader（权威）      │
+│ 书房 / 阅读页   │ ◀─────── │  lib.rs          │ ◀──────────────  │ 数据目录（权威）        │
 └────────────────┘          │  core_client.rs  │                  └────────────────────────┘
                             │  db.rs (SQLite)  │──▶ cache.sqlite3（可删缓存）
                             │  archive.rs      │──▶ app_data_dir/archived/*.zip（封印）

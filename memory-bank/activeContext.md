@@ -221,7 +221,48 @@
   也是存回内核的位置。跳转落在已装好的这一批之外时由 `loadAt` 从目标行重新铺一批
   （并把滚动位置拉回顶部）。一屏滚多少按**像素**算（`SCROLL ratio 0.9`），
   不再需要「这一屏放得下几行」这种度量 —— `pageSize` / `viewport` / 量法都删了。
-## 本次改动（2026-10-13，第三十一轮）：管理条那一排按钮的高度与滚动条
+## 本次改动（2026-10-14，第三十二轮）：装上新版「书全没了」——发布版不再按编译期路径找数据
+
+**需求**：用户原话「测试软件封装成 app/dmg，覆盖已经安装的 paget 的时候，安装新版本会自动把已安装版本内，
+已经导入的书自动删除，请解决这个问题」。
+
+**先取证（不猜）**：`strings /Applications/Paget.app/Contents/MacOS/Paget` → **里面有编译期烧进去的仓库路径**
+（`/Users/zhangziluo/Downloads/Paget/src-tauri`，还有 `Cargo.toml` / `package.json` / `WREADER_HOME` /
+`WREADER_NOVELS_DIR`）。顺着这条线读 `lib.rs` 的 `use_project_data_root()`：它只要「那份源码树还在同一台机器的
+同一个位置」，**发布版也一样**把内核数据（书库 / 正文 / 成就 / 布局）写进那个 checkout 的 `.wreader/`。
+本机正好如此（装机版的书库就写在**仓库**里），于是：换一个目录打包、把 checkout 挪个地方、换台机器，
+同一个 app 的数据根就变成另一个**空目录** → 书架空的，看着就像「安装包把书删了」（其实一份没删 —— 只是
+找错了地方；`prune` 那种「清理失效书目」只手动触发，不会自己跑）。
+
+**改了什么**：
+
+| 文件 | 改动 |
+| --- | --- |
+| `src-tauri/src/lib.rs` | `use_project_data_root()` → **`prepare_core_data_root(app)`**：数据根按「谁在跑」分两档。`tauri dev`（debug）→ 项目里的 `<repo>/.wreader/`（照旧：数据留在项目里，数据页那四个路径也仍指向项目）；**装出去的 app（release）→ 应用数据目录**：macOS `~/Library/Application Support/com.paget.gui/core`、Windows `%LOCALAPPDATA%\com.paget.gui\core` —— 只跟 identifier 有关，与「在哪儿编译」「装第几版」都无关。`$WREADER_HOME` 设过就一个字节都不动 |
+| 同上 | `dev_checkout_root()` 拆成 `#[cfg(debug_assertions)]` / `#[cfg(not(...))]` 两份：**发布版里连那个路径字符串都不编进去**（`strings` 可证），从根上断掉「按编译路径找数据」 |
+| 同上 | 新增 `adopt_legacy_core_data(home, legacy)`：新家还空着时从老位置**复制**一份过来 —— 老位置是项目 `.wreader/` 与内核默认 `~/.wreader` 两份都看，**挑最近写过的那份**（目录 mtime）；**复制不搬走**（项目里那份还要给 `tauri dev` 用、`~/.wreader` 那份要给终端前端用）；可重建的 `cache/` 不搬；失败不拦启动 |
+| `src-tauri/src/core_client.rs` | 同一个病的第二处：`dev_interpreter()`（找检出里的 `core/.venv/bin/python`）也读那个编译期路径，**从前发布版也拿它当候选** —— 一起收掉（只编进 debug；`dev_interpreter_in` 标成 `#[cfg(any(debug_assertions, test))]`）。顺带免掉「随包内核一旦缺，装在同机上的包就悄悄退回从源码跑」 |
+| `src-tauri/tauri.windows.conf.json` | `identifier` `com.paget.app` → **`com.paget.gui`**：与主配置对齐，Windows 上的应用数据目录才与 macOS 同一条规则（那边还没出过包，改它零代价） |
+
+**验证**（都在本机真跑）：
+
+- `cd src-tauri && cargo test` → **52 passed / 0 failed**（新增 5 条：显式变量不动 / dev 用项目 / release 用应用数据目录 /
+  本轮 debug 构建认得出项目根 / 收养时「挑最近写过的那份 + 复制不搬 + `cache/` 不搬 + 新家有数据就不再收养」）；
+- `npm run tauri build` → **.app 与 .dmg 都出包成功**；`strings` **新包主程序里已经找不到那个仓库路径**
+  （对照：旧的 `/Applications` 那份里有 1 处；新包里只剩一句错误提示文案里的相对路径 `core/.venv/...`）✓；
+- 覆盖安装到 `/Applications`（旧包先存到 `/tmp/Paget-old.app`）并反复启动：新家
+  `~/Library/Application Support/com.paget.gui/core/` 建出来、**104 本 197 个文件都在它自己的 `novels/` 里**，
+  再启动一次书数不变、不再触发收养、老位置两份（仓库 `.wreader/` 与 `~/.wreader/`）原样留着 ✓。
+
+**已知 / 取舍**：
+
+- **dev 与「装出去的 app」从此是两份数据**（项目 `.wreader/` vs 应用数据目录）—— 这是这次修复的直接结果，
+  也是标准做法；想把两边指到同一份就设 `$WREADER_HOME`；
+- 只从老位置**复制**：所以升级后如果在 `tauri dev` 里继续导入，两边会各走各的（不复同步）——
+  文档（README 的「打包」与 `techContext.md`）里都写明了；
+- `bundle_dmg.sh` 第一次在本机失败过一次（AppleScript / Finder 排布窗口那段，需要交互会话），
+  重跑即成功 —— 与本次改动无关，纯环境偶发。
+
 
 **需求**：用户原话「管理书架模式下，下方的长条高度有点窄，尤其是滚动条遮住了一部分文字」。
 

@@ -10,13 +10,20 @@ A desktop reader with its own Python kernel (`core/`): Tauri v2 + React/TS shell
 ```
 ┌────────────────┐   invoke    ┌──────────────────┐   stdin/stdout    ┌───────────────────────┐
 │ React (src/)   │ ──────────▶ │ Rust (src-tauri) │ ─── 一行一个 JSON ──▶│ python -m wreader.serve│
-│ 书架 / 阅读页  │             │ core_client.rs   │ ◀───────────────── │  ~/.wreader（权威）    │
+│ 书架 / 阅读页  │             │ core_client.rs   │ ◀───────────────── │ 数据目录（权威）        │
 └────────────────┘             │ db.rs (SQLite)   │                    └───────────────────────┘
                                └──────────────────┘
 ```
 
-- **数据只有一份**：书库、阅读位置、时长、统计、成就全都由 Python 内核写在 `~/.wreader`
+- **数据只有一份**：书库、阅读位置、时长、统计、成就全都由 Python 内核写在一个数据目录里
   （纯文本 JSON/TOML），界面每一处读的都是它 —— 关掉再打开、清掉缓存都接着上次的位置。
+  那个目录**跟着「谁在跑」分两档**（2026-10-14 定，见「打包」那一节）：`npm run tauri dev` 跑的是
+  项目里的 `<repo>/.wreader/`；**装出去的 app** 跑的是应用数据目录 ——
+  macOS `~/Library/Application Support/com.paget.gui/core`、
+  Windows `%LOCALAPPDATA%\com.paget.gui\core`。换一版、换台机器、把源码树挪个地方，用户的书都还在
+  原地；升级第一次跑时，老位置（项目 `.wreader/` 或 `~/.wreader`）那份会**复制**过来。
+  （从前发布版也会按**编译期路径**去找数据 —— 于是同一台机器上编译出来的包会把书库写进那个
+  checkout 的 `.wreader/`，换一次源码位置或换个目录打包，装上新版看着就像「书全被删了」。）
 - **SQLite 只是缓存**：`db.rs` 里那个 `cache.sqlite3`（放在应用配置目录）存的是书架快照、
   全文索引和界面自己的设置，随时可以删，删了下次启动从内核重建。
 - **界面不重写任何规则**：进度百分比用 `library.position_percentage` 的算法、
@@ -353,7 +360,7 @@ PAGET_CORE_COMMAND="$PWD/src-tauri/binaries/paget-core/paget-core" npm run tauri
 ## 测试
 
 ```bash
-cd src-tauri && cargo test     # 45 项：分词 / 切块 / SQLite 端到端 / 内核位置 / 真 sidecar 协议
+cd src-tauri && cargo test     # 52 项：分词 / 切块 / SQLite 端到端 / 内核位置 / 数据根 / 真 sidecar 协议
 ```
 
 - `db.rs` 里的用例**不碰真实数据**：每一条都在 `std::env::temp_dir()` 里开一个临时库，跑完删掉。
@@ -366,6 +373,16 @@ cd src-tauri && cargo test     # 45 项：分词 / 切块 / SQLite 端到端 / �
 packaging/build-core.sh                              # 1) 冻结内核
 npm run tauri build -- --ignore-version-mismatches   # 2) 打包成 .app / .dmg
 ```
+
+**装出去之后数据在哪儿**（2026-10-14 定，覆盖安装不会再动它）：**装出去的 app** 把内核数据放在
+**应用数据目录** —— macOS `~/Library/Application Support/com.paget.gui/core/`、
+Windows `%LOCALAPPDATA%\com.paget.gui\core\`（`settings.toml` / `library.json` / `achievements.json` /
+`novels/` / `shelf.json` 都在里面）。这个位置**只跟 app 的 identifier 有关**：覆盖安装、装新版、
+把 app 挪个地方、甚至在另一台机器上打包，用户的书都还在原地。
+升级第一次跑时，如果新家还空着而老位置（项目里的 `.wreader/` 或 `~/.wreader`）有数据，
+壳层会把**最近写过的那一份复制**过来（项目里那份仍留给 `tauri dev`、`~/.wreader` 那份仍留给终端前端；
+可重建的 `cache/` 不搬）。`tauri dev`（debug 构建）照旧用项目里的 `<repo>/.wreader/`，开发时数据不往外跑。
+想强制指定就用 `WREADER_HOME`（设了就一个字节都不动）。
 
 
 **第 1 步**：PyInstaller 把 `core/` 里那份 `wreader` 冻成 `src-tauri/binaries/paget-core/`，再用

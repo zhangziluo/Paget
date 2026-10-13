@@ -105,6 +105,9 @@ fn args_for(program: &str) -> Vec<String> {
 /// `<repo>/core/.venv/bin/python`（Windows 上是 `Scripts/python.exe`）。
 /// 早先它找的是仓库外并排的 `../wreader`，那份布局已经不需要了。
 /// 想指别处的解释器仍然可以设 `$PAGET_CORE_PYTHON`。
+///
+/// 只编给 debug 构建与测试：发布版里不该出现这条路（见 [`dev_interpreter`]）。
+#[cfg(any(debug_assertions, test))]
 fn dev_interpreter_in(root: &std::path::Path) -> Option<String> {
     // 两种常见布局：(a) 仓库根的 `core/`（现在这一种）；(b) 界面直接放在内核源码树里
     let venv = root.join("core").join(".venv");
@@ -121,10 +124,22 @@ fn dev_interpreter_in(root: &std::path::Path) -> Option<String> {
 }
 
 /// Return `<repo>/core/.venv/bin/python` when this is a development checkout.
+///
+/// **只编进 debug 构建**：它靠 `env!("CARGO_MANIFEST_DIR")`（一个编译期路径），而发布版里
+/// 既不该有这个路径字符串（2026-10-14 就是它 + 数据根那处一起让「装在同机上的包」去找源码树），
+/// 也不该出现「随包内核一旦缺了就退回从源码跑」这种事。用户设 `$PAGET_CORE_PYTHON` /
+/// `$PAGET_CORE_COMMAND` 仍然照旧最优先（那两条是运行期读的，与编译期路径无关）。
+#[cfg(debug_assertions)]
 fn dev_interpreter() -> Option<String> {
     // CARGO_MANIFEST_DIR 是 `<repo>/src-tauri`；上一级就是仓库根（内核在它的 core/ 里）
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     dev_interpreter_in(manifest.parent()?)
+}
+
+/// 发布版：没有「检出 venv」这一档。
+#[cfg(not(debug_assertions))]
+fn dev_interpreter() -> Option<String> {
+    None
 }
 
 /// The file name of the frozen sidecar on this platform.
@@ -209,8 +224,9 @@ impl CoreCommand {
     ///    `PAGET_CORE_COMMAND=/path/to/paget-core`.  Winning over everything else
     ///    is what lets a dev build (or a test run) point at the **bundled** binary.
     /// 2. `$PAGET_CORE_PYTHON` -- an interpreter that has `wreader` installed.
-    /// 3. automatic: the frozen sidecar (release builds), then the dev checkout's
-    ///    `.venv/bin/python`.
+    /// 3. automatic: the frozen sidecar (release builds), then -- **in development
+    ///    builds only** -- the dev checkout's `.venv/bin/python` (its path is baked
+    ///    at compile time, so a shipped build must not follow it).
     /// 4. `python3` from `PATH`, which only works when `wreader` is installed for it.
     fn resolve(resource_dir: Option<&std::path::Path>) -> Self {
         // 1) 整条命令行最优先（显式压过一切，包括随包分发的那份内核）

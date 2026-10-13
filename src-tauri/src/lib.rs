@@ -20,6 +20,7 @@ mod db;
 
 use serde::Serialize;
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 use tauri::{Manager, State};
 
 use core_client::CoreState;
@@ -471,29 +472,153 @@ mod desktop_picker {
     }
 }
 
-/// Point the core's data at this checkout, so the Data tab's "数据位置" all stay
-/// inside the project folder (unless the user already set the variables themselves).
+/* ------------------------------------------------------------------ */
+/* 内核数据放哪儿：开发在项目里，发布跟着用户走                              */
+/* ------------------------------------------------------------------ */
+
+/// 内核数据目录的环境变量名（与 `core/wreader/config.py` 的 `ENV_HOME` 一致）。
+const ENV_CORE_HOME: &str = "WREADER_HOME";
+/// 正文目录的环境变量名（同上，`ENV_NOVELS_DIR`）。
+const ENV_CORE_NOVELS: &str = "WREADER_NOVELS_DIR";
+/// 开发构建把数据放在项目里的哪个子目录（`.gitignore` 里也忽略它）。
+const PROJECT_DATA_DIRNAME: &str = ".wreader";
+/// 发布版把数据放在应用数据目录下的哪个子目录。
+const APP_DATA_DIRNAME: &str = "core";
+
+/// 数据根怎么挑（纯函数，好在 `cargo test` 里钉住）。
 ///
-/// The core reads `$WREADER_HOME` (default `~/.wreader`) and `$WREADER_NOVELS_DIR`
-/// (default `~/novels`); the sidecar we spawn inherits these.  `env!` bakes the
-/// build-time path of `src-tauri/`, so the switch only applies while that checkout is
-/// still on disk -- a copy of the app on another machine quietly falls back to the
-/// core's own defaults instead of pointing at a path that does not exist there.
-fn use_project_data_root() {
-    // `CARGO_MANIFEST_DIR` 是 <项目>/src-tauri，上一级就是项目根
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let Some(root) = manifest.parent() else { return };
-    // 源码树不在（打包后换了机器）就什么都不设，走内核默认
-    if !manifest.join("Cargo.toml").exists() || !root.join("package.json").exists() {
-        return;
+/// * `explicit`：用户自己设了 `$WREADER_HOME` → `None`，**一个字节都不动**；
+/// * `dev_checkout`：`Some(项目根)` = 这是一次开发构建（debug）且那份源码树还在
+///   → 项目里的 `.wreader/`（数据留在项目里，开发时最方便）；
+/// * `app_data`：Tauri 给的应用数据目录（macOS `~/Library/Application Support/<id>`、
+///   Windows `%LOCALAPPDATA%\<id>`）→ 它下面的 `core/`。
+fn pick_core_home(
+    explicit: bool,
+    dev_checkout: Option<PathBuf>,
+    app_data: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if explicit {
+        return None;
     }
-    // 数据与正文都收进项目根的 .wreader/；用户自己设过的变量优先
-    let home = root.join(".wreader");
-    if std::env::var_os("WREADER_HOME").is_none() {
-        std::env::set_var("WREADER_HOME", &home);
+    dev_checkout
+        .map(|root| root.join(PROJECT_DATA_DIRNAME))
+        .or_else(|| app_data.map(|dir| dir.join(APP_DATA_DIRNAME)))
+}
+
+/// 开发构建时的项目根（`env!("CARGO_MANIFEST_DIR")` 的上一级），而且是**这份源码树真的还在**时才算。
+///
+/// 只编进 debug 构建：**发布版里连这个路径字符串都不该有** —— 从前发布版也读它，于是「装出去的
+/// app」会把书库写进那个 checkout 的 `.wreader/`（`strings` 已安装的 app 就能看到烧进去的路径），
+/// 换一次源码位置 / 换个目录打包 / 换台机器，数据根就换成了另一个空目录 —— 书看着像被安装包删了。
+#[cfg(debug_assertions)]
+fn dev_checkout_root() -> Option<PathBuf> {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.parent()?.to_path_buf();
+    // 源码树不在（包被搬到别的机器、或者那份 checkout 删了）就当没有这一档
+    (manifest.join("Cargo.toml").exists() && root.join("package.json").exists()).then_some(root)
+}
+
+/// 发布版：没有「项目里的数据」这一档（那个编译期路径也不会被编进二进制）。
+#[cfg(not(debug_assertions))]
+fn dev_checkout_root() -> Option<PathBuf> {
+    None
+}
+
+/// 内核自己那份默认数据目录：macOS / Linux 是 `~/.wreader`，Windows 是 `%APPDATA%\wreader`
+/// （与 `core/wreader/config.py` 的 `_app_dir` 对齐）。
+fn core_default_home() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return std::env::var_os("APPDATA")
+            .map(|base| PathBuf::from(base).join("wreader"))
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .map(|home| PathBuf::from(home).join("AppData/Roaming/wreader"))
+            });
     }
-    if std::env::var_os("WREADER_NOVELS_DIR").is_none() {
-        std::env::set_var("WREADER_NOVELS_DIR", home.join("novels"));
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".wreader"))
+}
+
+/// 「老位置」都有哪些：项目里的 `.wreader/`（如果这份源码树还在）与内核自己的 `~/.wreader`。
+fn legacy_core_homes(dev: Option<&Path>) -> Vec<PathBuf> {
+    let mut homes = Vec::new();
+    if let Some(root) = dev {
+        homes.push(root.join(PROJECT_DATA_DIRNAME));
+    }
+    if let Some(default) = core_default_home() {
+        homes.push(default);
+    }
+    homes
+}
+
+/// 递归复制目录，跳过点名的子目录与 `.DS_Store`（`cache/` 是可重建的章节缓存，不必搬）。
+fn copy_dir_skipping(from: &Path, to: &Path, skip: &[&str]) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == ".DS_Store" || skip.iter().any(|skipped| *skipped == name) {
+            continue;
+        }
+        let target = to.join(&name);
+        if entry.path().is_dir() {
+            copy_dir_skipping(&entry.path(), &target, skip)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// 新家还空着时，从老位置**复制**一份过来（返回复制自哪儿）。
+///
+/// 两种老位置都要照顾：项目里的 `.wreader/`（以前那个「看编译期路径」的发布版写进去的）与
+/// `~/.wreader`（内核自己的默认位置）。两份都在时挑**最近写过**的那份（目录 mtime），
+/// 另一份只在该函数外留一行日志 —— 想用另一份就设 `$WREADER_HOME`。
+///
+/// 复制而不是搬走：项目里那份要继续给 `cargo dev` 用，`~/.wreader` 那份要继续给终端前端用。
+/// 复制失败不拦启动（内核会在新家从零建一份）。
+fn adopt_legacy_core_data(home: &Path, legacy: &[PathBuf]) -> Option<PathBuf> {
+    if home.exists() {
+        return None;
+    }
+    // 只有「真像一份数据目录」的才算候选（至少有索引或设置文件）
+    let mut candidates: Vec<(&PathBuf, std::time::SystemTime)> = legacy
+        .iter()
+        .filter(|dir| dir.join("library.json").exists() || dir.join("settings.toml").exists())
+        .map(|dir| {
+            let written = std::fs::metadata(dir)
+                .and_then(|meta| meta.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (dir, written)
+        })
+        .collect();
+    candidates.sort_by_key(|(_, written)| *written);
+    let (source, _) = candidates.pop()?;
+    copy_dir_skipping(source, home, &["cache"]).ok()?;
+    Some(source.clone())
+}
+
+/// 定下内核的数据根（并把老位置那份收养过来），在 `setup` 里、拉内核之前调一次。
+///
+/// 优先级：`$WREADER_HOME` > 开发构建的项目 `.wreader/` > 应用数据目录 `<id>/core`。
+fn prepare_core_data_root(app: &tauri::AppHandle) {
+    let explicit = std::env::var_os(ENV_CORE_HOME).is_some();
+    let dev = dev_checkout_root();
+    let app_data = app.path().app_local_data_dir().ok();
+    let Some(home) = pick_core_home(explicit, dev.clone(), app_data) else {
+        return; // 用户自己设过：一个字节都不动
+    };
+    // 发布版第一次跑到新家时，把老位置那份复制过来（复制，不是搬走）
+    if let Some(source) = adopt_legacy_core_data(&home, &legacy_core_homes(dev.as_deref())) {
+        eprintln!(
+            "paget: 内核数据已从 {} 复制到 {}（老位置原样留着）",
+            source.display(),
+            home.display()
+        );
+    }
+    std::env::set_var(ENV_CORE_HOME, &home);
+    if std::env::var_os(ENV_CORE_NOVELS).is_none() {
+        std::env::set_var(ENV_CORE_NOVELS, home.join("novels"));
     }
 }
 
@@ -932,6 +1057,102 @@ mod picker_tests {
     }
 }
 
+/// 内核数据根：**发布版不许再看编译期路径** —— 2026-10-14 那次「装上新版书全没了」的守门人。
+#[cfg(test)]
+mod data_root_tests {
+    use super::{adopt_legacy_core_data, dev_checkout_root, pick_core_home};
+    use std::path::PathBuf;
+
+    /// 用户自己设了 `$WREADER_HOME` → 什么都不动（项目里那份也不碰）
+    #[test]
+    fn explicit_home_is_left_alone() {
+        assert_eq!(
+            pick_core_home(
+                true,
+                Some(PathBuf::from("/repo")),
+                Some(PathBuf::from("/app"))
+            ),
+            None
+        );
+    }
+
+    /// 开发构建（debug + 源码树在）→ 项目里的 `.wreader/`
+    #[test]
+    fn dev_build_keeps_data_in_the_project() {
+        assert_eq!(
+            pick_core_home(
+                false,
+                Some(PathBuf::from("/repo")),
+                Some(PathBuf::from("/app"))
+            ),
+            Some(PathBuf::from("/repo/.wreader"))
+        );
+    }
+
+    /// 发布版（`dev_checkout_root()` 给 None）→ 应用数据目录下的 `core/`：与「在哪儿编译」无关，
+    /// 换一版、换台机器、把 checkout 挪个地方，用户的书都还在同一个地方。
+    #[test]
+    fn release_build_goes_to_the_app_data_dir() {
+        assert_eq!(
+            pick_core_home(false, None, Some(PathBuf::from("/app"))),
+            Some(PathBuf::from("/app/core"))
+        );
+        // 应用数据目录都拿不到（平台不支持 / 权限异常）：宁可不设，也别指到一个不存在的地方
+        assert_eq!(pick_core_home(false, None, None), None);
+    }
+
+    /// 本轮 `cargo test` 是 debug 构建、源码树就在旁边 → 那一档必须真的认得出来
+    #[test]
+    fn this_checkout_counts_as_a_dev_build() {
+        let root = dev_checkout_root().expect("debug 构建应当认出项目根");
+        assert!(root.join("package.json").is_file(), "{}", root.display());
+    }
+
+    /// 收养老数据：挑**最近写过**的那份、**复制**而不是搬走、可重建的 `cache/` 不搬
+    #[test]
+    fn adopts_the_most_recent_legacy_home_without_moving_it() {
+        let root = std::env::temp_dir().join(format!("paget-home-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let older = root.join("repo/.wreader");
+        let newer = root.join("home/.wreader");
+        std::fs::create_dir_all(older.join("novels")).unwrap();
+        std::fs::write(older.join("library.json"), br#"{"books":{"old":{}}}"#).unwrap();
+        std::fs::write(older.join("novels/旧书.txt"), b"old").unwrap();
+        // 让两份的 mtime 分得开：先睡一下再写后一份
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::fs::create_dir_all(newer.join("novels")).unwrap();
+        std::fs::create_dir_all(newer.join("cache")).unwrap();
+        std::fs::write(newer.join("library.json"), br#"{"books":{"new":{}}}"#).unwrap();
+        std::fs::write(newer.join("novels/新书.txt"), b"new").unwrap();
+        std::fs::write(newer.join("cache/chapters.json"), b"cache").unwrap();
+
+        let target = root.join("app/core");
+        let source = adopt_legacy_core_data(&target, &[older.clone(), newer.clone()]).expect("该收养");
+
+        assert_eq!(source, newer, "应当挑最近写过的那份");
+        assert_eq!(
+            std::fs::read(target.join("library.json")).unwrap(),
+            br#"{"books":{"new":{}}}"#
+        );
+        assert!(target.join("novels/新书.txt").is_file());
+        assert!(!target.join("cache").exists(), "可重建的 cache/ 不必搬");
+        // 老位置原样留着（项目里那份还要给 `cargo dev` 用、`~/.wreader` 要给终端前端用）
+        assert!(newer.join("library.json").is_file());
+        assert!(older.join("library.json").is_file());
+
+        // 新家已经有数据：不再收养（免得盖掉用户正在用的那份）
+        std::fs::write(target.join("library.json"), br#"{"books":{"mine":{}}}"#).unwrap();
+        assert_eq!(adopt_legacy_core_data(&target, &[older, newer]), None);
+
+        // 两份都不像数据目录（既没 library.json 也没 settings.toml）→ 不动手
+        let empty = root.join("empty/.wreader");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert_eq!(adopt_legacy_core_data(&root.join("app2/core"), &[empty]), None);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* PDF：图片模式（原样发字节给前端渲染）+ 「转换成文字」                    */
 /* ------------------------------------------------------------------ */
@@ -1021,8 +1242,8 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_dialog::init());
     builder
         .setup(|app| {
-            // 让内核把数据放进项目文件夹（数据 Tab 显示的四个路径都会落在里面）
-            use_project_data_root();
+            // 内核数据放哪儿：开发构建留在项目里，发布版跟着用户走（旧位置那份会先被复制过来）
+            prepare_core_data_root(app.handle());
             // 缓存文件放在应用的配置目录里：随时可以删，删了下次启动自动重建
             let path = app.path().app_config_dir()?.join("cache.sqlite3");
             // setup 是同步的：只在启动时阻塞这一次，把库建好

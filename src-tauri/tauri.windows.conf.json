@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "identifier": "com.paget.app",
+  "identifier": "com.paget.gui",
   "bundle": {
     "targets": ["msi", "nsis"],
     "windows": {

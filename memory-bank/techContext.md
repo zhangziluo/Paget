@@ -71,8 +71,8 @@ Paget 不 import 它，只在运行期拉起 `python -m wreader.serve`（JSON-RP
 
 | 变量 | 作用 |
 | --- | --- |
-| `WREADER_HOME` | 内核数据目录；**dev 下 `use_project_data_root()` 会自动设成 `<repo>/.wreader`**（用户自己设过的优先） |
-| `WREADER_NOVELS_DIR` | 正文目录；同上设成 `<repo>/.wreader/novels` |
+| `WREADER_HOME` | 内核数据目录。**没设时由壳层自己定**（`lib.rs` 的 `prepare_core_data_root`）：`tauri dev`（debug 构建）→ `<repo>/.wreader`；**装出去的 app**（release）→ 应用数据目录下的 `core/`（macOS `~/Library/Application Support/com.paget.gui/core`、Windows `%LOCALAPPDATA%\com.paget.gui\core`）。**用户自己设过就一个字节都不动** |
+| `WREADER_NOVELS_DIR` | 正文目录；同上，设成该数据目录下的 `novels/` |
 | `PAGET_CORE_COMMAND` | 整条内核命令行（如 `paget-core --stdio`）；最高优先级。要顶用随包冻结点就用它：`PAGET_CORE_COMMAND="$PWD/src-tauri/binaries/paget-core/paget-core" npm run tauri dev`（原叫 `WREADER_CORE_COMMAND`） |
 | `PAGET_CORE_PYTHON` | 指定解释器（不写 `-m wreader.serve`）（原叫 `WREADER_CORE_PYTHON`） |
 | `PAGET_CORE_ROOT` | `packaging/build-core.sh` / `build_core.py` / `build_windows.py` / `paget-core.spec` 用来找内核源码树。优先级：**`--core-root` 参数** > 这个变量 > **仓库自带的 `core/`** > 从解释器里那份 `wreader` 反推（原叫 `WREADER_ROOT`） |
@@ -84,8 +84,9 @@ Paget 不 import 它，只在运行期拉起 `python -m wreader.serve`（JSON-RP
 | 本机缓存（书架快照 / 全文索引 / GUI 位置与设置） | `<app config dir>/cache.sqlite3`（本机即 `~/Library/Application Support/com.paget.gui/cache.sqlite3`） | 删掉即重建 |
 | 本地封面 + 生成方案 | `<app data dir>/covers/<book_id>.{jpg,jpeg,png,webp}` 与 `covers/<book_id>.json` | 删掉即回落自动生成 |
 | 封印归档 | `<app data dir>/archived/<sha8><rand>.zip`（内含 `paget-archive.json`） | 可搬走 / 找回 |
-| 内核数据（dev） | `<repo>/.wreader/`（`settings.toml` / `library.json` / `achievements.json` / `novels/`） | `WREADER_HOME` |
-| 内核数据（装到别处 / 源码树不在） | `~/.wreader`（内核默认） | `WREADER_HOME` |
+| 内核数据（`tauri dev` / debug 构建） | `<repo>/.wreader/`（`settings.toml` / `library.json` / `achievements.json` / `novels/` / `shelf.json`） | `WREADER_HOME` |
+| 内核数据（**装出去的 app** / release 构建） | macOS `~/Library/Application Support/com.paget.gui/core/`、Windows `%LOCALAPPDATA%\com.paget.gui\core\` —— **只跟 app 的 identifier 有关**，与「在哪儿编译」「装第几版」都无关 | `WREADER_HOME` |
+| 升级时的一次性收养 | 新家还空着、而老位置（项目 `.wreader/`、`~/.wreader`）有数据 → **复制**最近写过的那份过去（可重建的 `cache/` 不搬；旧位置原样留着） | `lib.rs` 的 `adopt_legacy_core_data` |
 | 冻结点内核 | `src-tauri/binaries/paget-core/`（打包后落 `<resource dir>/core/paget-core`；Windows 上是 `paget-core.exe`）；**已 gitignore** | `packaging/build-core.sh`（macOS / Linux）/ `packaging/build_core.py`（Windows） |
 | 构建产物 | `dist/`（前端）、`src-tauri/target/release/bundle/{macos,dmg}` / `{msi,nsis}` | — |
 
