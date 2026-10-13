@@ -1030,6 +1030,11 @@ export default function Reader(props: {
     // 换标记（光点 ⇄ 兔子）也盯着：那一位是新挂的元素，没写 left/top 之前会闪在行首
   }, [guideIndex, guideMarker, guideOn, guideTrailRows, prefs, slice, placeGuide]);
 
+  // Esc 的最后一步是「退出到书架」：`finish` 每次渲染都会新建，放进 ref 免得监听器拿到旧闭包
+  // （与下面那些指针回调同一个做法）
+  const finishRef = useRef(finish);
+  finishRef.current = finish;
+
   // 键盘：↑ ↓ 翻一行、← → / 空格 / PgUp / PgDn 滚一屏、1–6 换光点快捷档、0 开关光点导读
   // （底部那四个按钮就是被它们替掉的；光点档位也能在下栏那颗「档位」里拖）
   useEffect(() => {
@@ -1073,11 +1078,15 @@ export default function Reader(props: {
           }
           break;
         case "Escape":
-          // 先收面板（Aa / 纸色 / 档位 / 翻页设置），再收两栏
+          // Esc 一路往回退：先收面板（Aa / 纸色 / 档位 / 翻页设置），再收两栏，**都没有就记好账回书架**
+          // （2026-10-14 用户要求：阅读模式下 Esc 默认应当退出到书架；与「← 书架」同一条路 ——
+          //  经 finish() 落位置 / 时长 / 成就，不是直接关掉）
           if (panel) {
             setPanel(null);
           } else if (barOpen) {
             setBarOpen(false);
+          } else {
+            void finishRef.current();
           }
           break;
         case "0":

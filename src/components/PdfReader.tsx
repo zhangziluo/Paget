@@ -256,7 +256,7 @@ export default function PdfReader(props: {
     }
   }, [props.book.id, persist, props.onConverted]);
 
-  // 点面板外面 / 按 Esc 收起那块浮层（与文字阅读页同一套做法：判内外用 `.reader-prefs-wrap`）
+  // 点面板外面收起那块浮层（与文字阅读页同一套做法：判内外用 `.reader-prefs-wrap`）
   useEffect(() => {
     if (!panel) return;
     function onDown(event: MouseEvent) {
@@ -264,16 +264,23 @@ export default function PdfReader(props: {
       const inside = node instanceof Element && node.closest(".reader-prefs-wrap") !== null;
       if (!inside) setPanel(null);
     }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setPanel(null);
-    }
     window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
+    return () => window.removeEventListener("mousedown", onDown);
   }, [panel]);
+
+  // Esc 一路往回退：先收「翻页设置」那块浮层，再收顶栏，**都没有就记好账回书架**
+  // （2026-10-14 用户要求：阅读模式下 Esc 默认应当退出到书架，PDF 这边一样；与「← 书架」同一条路）。
+  // 这条监听不走上面那个「只在面板打开时挂」的 effect —— 不然后两步根本没人接。
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (panel) setPanel(null);
+      else if (barOpen) setBarOpen(false);
+      else void finish();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [panel, barOpen, finish]);
 
   /** 翻到某一页：交给 `PdfPages` 滚过去，位置由滚动回调照常记。 */
   const gotoPage = useCallback((index: number) => {
