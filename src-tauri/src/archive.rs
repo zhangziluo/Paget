@@ -4,7 +4,7 @@
 //! A book the user marked as *limited* (a library-style loan) disappears from the
 //! shelf the moment its due day starts.  Nothing is really deleted: the whole file
 //! is packed into ``app_data_dir/archived/<sha8><rand>.zip``, the index record is
-//! dropped through the core's `remove` (so `werd list` stays honest) and the book
+//! dropped through the core's `remove` (so the book list stays honest) and the book
 //! vanishes from the shelf.  ``paget-archive.json`` rides **inside** the zip, so the
 //! "已归档" page can list and restore everything from the archives alone -- the
 //! SQLite cache may be thrown away at any time (see `db.rs`) and the archives stay

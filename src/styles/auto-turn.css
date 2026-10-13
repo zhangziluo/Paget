@@ -1,0 +1,90 @@
+/*
+ * 自动翻页（免手翻）的两块界面：开着时的节奏小牌子，以及连着翻久了弹的校验题。
+ *
+ * 两块样式都要在**两种阅读页**里都看得清：文字页是纸面（浅色），图片页是深灰底，
+ * 所以这里一律用深色半透明胶囊 + 白字（与 `.pdf-note` 同一套观感）。
+ */
+
+.auto-chip {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 28;
+  margin: 0;
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  /* 点一下能开「阅读设置」（改自动翻页的节奏），所以这里收着点击 */
+  cursor: pointer;
+}
+
+.auto-chip:hover {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+/* 校验题：一张居中的小卡片，压在书页之上（题在屏上时自动翻页已经暂停） */
+.auto-check {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.auto-check-box {
+  min-width: 280px;
+  max-width: 380px;
+  padding: 18px 20px 14px;
+  border-radius: 14px;
+  background: #fffdf8;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  text-align: center;
+}
+
+.auto-check-prompt {
+  margin: 10px 0 14px;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.auto-check-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+/* 四个选项等宽：看起来像一道题，而不是四个零散按钮 */
+.auto-check-choices .ghost {
+  min-width: 64px;
+  padding: 8px 12px;
+  font-size: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.auto-check-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 14px 0 0;
+  font-size: 12px;
+}
+
+.auto-check-foot .ghost {
+  border: 0;
+  background: none;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}

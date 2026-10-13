@@ -1,0 +1,288 @@
+/*
+ * 便利贴式功能入口（`components/StickyNoteNav.tsx`）：墙上那一栏里那三枚贴纸。
+ *
+ * 与书房其余几节同一套做法：**纯 CSS** 塑形（和纸纹理是几层渐变叠出来的，不用图片、
+ * 不引 web font —— 离线应用，一个纹理资产也不想多），位置 / 角度 / 时长走自定义属性，
+ * `@keyframes` 里不写死坐标。
+ *
+ * 尺寸按 rem 写：`3rem × 2rem` ≈ 48 × 32px（根字号 16px 时）—— 与书房其余尺寸一样
+ * 跟着用户调的字号走，而不是钉死在 px 上。
+ *
+ * 选择器都带 `.sticky-notes .sticky-note` 这层前缀：`App.css` 里那句
+ * `button:active:not(:disabled) { transform: translateY(1px) }` 权重是 (0,3,0)，
+ * 而我们这一份是 `@import` 进 `App.css` **顶部**的 —— 同级权重时它在后面、会赢，
+ * 所以这里的状态规则都往上加一级（见 `.is-dragging:not(:disabled)` 那几条）。
+ */
+
+/* 三枚贴纸站成一小排（墙上那一栏的第一个位置） */
+.sticky-notes {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  /* 贴纸能拖出这一栏（偏移写在 transform 上），所以别裁切 */
+  padding: 0.45rem 0.15rem 0.15rem;
+}
+
+/*
+ * 一枚贴纸。外层只管「位置 + 倾斜 + 捏起 / 撕下」，翻转交给里层的卡 ——
+ * 一层只写一个 transform，互不打架。
+ */
+.sticky-notes .sticky-note {
+  /* 中文手写体：字体栈已经提成全局的 `--hand-font`（`App.css` 的 `:root` ——
+     统计页那一纸「读书日记」也用它，两边不能各写一份），这里只是换个本地名字给下面用。 */
+  --note-font: var(--hand-font);
+  position: relative;
+  z-index: 2;
+  width: 3rem;
+  height: 2rem;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  cursor: grab;
+  /* 触屏上也走 pointermove 拖动（与书架排序同一句） */
+  touch-action: none;
+  transform: translate(var(--note-dx, 0px), var(--note-dy, 0px)) rotate(var(--note-tilt, 0deg));
+  transition: transform 180ms cubic-bezier(0.34, 1.32, 0.64, 1), width 240ms ease, height 240ms ease;
+}
+
+/* Hover / 按下：微微下压（需求 scale 0.98） */
+.sticky-notes .sticky-note:hover,
+.sticky-notes .sticky-note:active:not(:disabled) {
+  transform: translate(var(--note-dx, 0px), var(--note-dy, 0px)) rotate(var(--note-tilt, 0deg))
+    scale(0.98);
+}
+
+/* 拖动中：跟着指针走，别再有过渡（不然会"追"不上指针） */
+.sticky-notes .sticky-note.is-dragging:not(:disabled) {
+  z-index: 40;
+  cursor: grabbing;
+  transform: translate(var(--note-dx, 0px), var(--note-dy, 0px)) rotate(var(--note-tilt, 0deg));
+  transition: none;
+}
+
+/* 点一下先「被捏起来」：抬一点、再歪一点（等连点窗口过去才真撕下） */
+.sticky-notes .sticky-note.is-lifting:not(:disabled) {
+  transform: translate(var(--note-dx, 0px), var(--note-dy, 0px))
+    rotate(calc(var(--note-tilt, 0deg) + 4deg)) scale(0.99);
+}
+
+/* 撕下：向上飞出 + 转 15° + 淡出（时长与 TSX 的 `TEAR_MS` 是一对） */
+.sticky-notes .sticky-note.is-tearing:not(:disabled) {
+  animation: sticky-note-tear 220ms ease-in forwards;
+  pointer-events: none;
+}
+
+/* 面板关掉、书架重新挂载时：这一枚从上方飞回来（需求：便利贴贴回） */
+.sticky-notes .sticky-note.is-returning:not(:disabled) {
+  animation: sticky-note-back 340ms cubic-bezier(0.22, 1.2, 0.5, 1) both;
+}
+
+/* 连点 5 下：翻到背面看一句话 */
+.sticky-notes .sticky-note.is-flipped .sticky-note-card {
+  transform: rotateY(180deg);
+}
+
+/*
+ * 翻到背面时让纸**展开一点**：背面是一整句话（9 个字上下），48×32 的小纸片只够
+ * 显出一截（截成「书架满…」那种）。所以翻过来时长宽各放一档、字允许折行 ——
+ * 像真便利贴翻过来摊平了看。
+ */
+.sticky-notes .sticky-note.is-flipped {
+  width: 5.2rem;
+  height: 3rem;
+}
+
+.sticky-notes .sticky-note.is-flipped .sticky-note-text {
+  white-space: normal;
+  line-height: 1.25;
+}
+
+/*
+ * 三种纸色：米黄 / 淡粉 / 淡绿（`--note-hi` 是近白的那一头，`--note-lo` 是纸的底色）。
+ *
+ * `--note-ink` 是字色：2026-10-07 三档一起压深（原来 #4a3a1c / #5b3540 / #39492b 落在
+ * 纸色上偏灰），现在三档相对各自纸色的对比度都在 **10:1 以上**（WCAG AAA 要的是 7:1）——
+ * 小纸片也要一眼读得清。
+ */
+.sticky-notes .sticky-note.butter {
+  --note-hi: #fdf6dc;
+  --note-lo: #f0dfa8;
+  --note-ink: #33270e;
+}
+
+.sticky-notes .sticky-note.blush {
+  --note-hi: #fdebee;
+  --note-lo: #f4cdd4;
+  --note-ink: #401d27;
+}
+
+.sticky-notes .sticky-note.mint {
+  --note-hi: #edf7e6;
+  --note-lo: #cee5c3;
+  --note-ink: #24311a;
+}
+
+/*
+ * 22:00 之后（到次日 6:00）：纸边微微发黄。
+ *
+ * 走「整纸蒙一层暖黄（`filter`）+ 边缘压一圈更重的琥珀（`box-shadow: inset`）」
+ * 而不是径向渐变：`radial-gradient` 的百分比尺寸在小盒子上既不好看、压缩后再渲染
+ * 也容易整个失效（试过，纸上什么都没发生）；这两件是兼容性最稳的写法。
+ */
+.sticky-notes .sticky-note.is-late .sticky-note-face {
+  filter: sepia(0.18) saturate(1.05) brightness(0.99);
+}
+
+.sticky-notes .sticky-note.is-late .sticky-note-face::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0.5rem rgba(170, 122, 30, 0.42);
+}
+
+/* 卡：3D 翻转那一层（`preserve-3d` + 两个背面隐藏的面） */
+.sticky-note .sticky-note-card {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  transition: transform 420ms cubic-bezier(0.34, 1.28, 0.64, 1);
+}
+
+/*
+ * 纸面：和纸质感 = 细纤维（repeating）+ 一道水痕（radial）+ 斜向纸色（linear）。
+ * 四角故意不完全一样 —— 手撕的纸，不是裁纸刀切的。
+ * 柔投影按需求：offset-y 2px / blur 4px / opacity 0.15。
+ *
+ * 显隐**不靠** `backface-visibility`：有些离屏渲染器（例如出图用的 WebKit 快照）
+ * 不认它，于是两张面会一起画上去、背面（镜像的那一张）盖住正面。这里正面 / 背面
+ * 各用自己的 `opacity` 说清楚谁该露脸，3D 那一下只负责「转」的观感。
+ */
+.sticky-note .sticky-note-face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.1rem 0.18rem;
+  border-radius: 2px 4px 2px 3px;
+  overflow: hidden;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  font-family: var(--note-font);
+  /*
+   * 字号 / 字重（2026-10-07 用户反馈：「字样有点浅了，字重调深一点，字体再调大几号」）：
+   * 原来是 0.6rem / 400，贴在木墙上偏小偏淡。这里放到 **0.72rem**（+20%）、**600**。
+   * 手写体（翩翩体那一串）多半只有一档字重，600 会被渲染器**合成加粗**、正是想要的那点分量；
+   * 三枚贴纸的前面分别是「日记」「勋章」「调一调」最多三个字 —— 0.72rem 下三个字约 35px，
+   * 加上左右内边距 5.8px 仍在 48px 的纸片里，不会触发下面那句 `text-overflow: ellipsis`。
+   */
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  text-align: center;
+  color: var(--note-ink, #33270e);
+  background-image:
+    repeating-linear-gradient(88deg, rgba(160, 130, 90, 0.09) 0 1px, transparent 1px 4px),
+    radial-gradient(ellipse 62% 46% at 28% 18%, rgba(255, 255, 255, 0.6), transparent 70%),
+    linear-gradient(168deg, var(--note-hi, #fdf6dc), var(--note-lo, #f0dfa8));
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+  transition: opacity 160ms ease, box-shadow 180ms ease;
+}
+
+/* 正面朝外；背面先转过半圈（翻过来才正对眼睛），平时藏着 */
+.sticky-note .sticky-note-face.front {
+  opacity: 1;
+}
+
+.sticky-note .sticky-note-face.back {
+  opacity: 0;
+  transform: rotateY(180deg);
+}
+
+/* 翻到背面：正面让位、背面露脸 */
+.sticky-notes .sticky-note.is-flipped .sticky-note-face.front {
+  opacity: 0;
+}
+
+.sticky-notes .sticky-note.is-flipped .sticky-note-face.back {
+  opacity: 1;
+}
+
+/* Hover / 捏起：投影加深（需求：投影加深） */
+.sticky-notes .sticky-note:hover .sticky-note-face,
+.sticky-notes .sticky-note.is-lifting .sticky-note-face {
+  box-shadow: 0 6px 12px rgba(20, 10, 0, 0.24);
+}
+
+/* 字：格子窄，放不下就省略号（三四个字一般是够的） */
+.sticky-note .sticky-note-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * 右下角那点翘起（需求：翘起 3px）。一条短横的渐变 = 掀起来的那条纸边 +
+ * 一道压痕；hover 时它"展开"（变高一档）—— 需求里的「翘角展开」。
+ */
+.sticky-note .sticky-note-curl {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 0.62rem;
+  height: 0.19rem;
+  border-bottom-right-radius: 3px;
+  background-image: linear-gradient(
+    200deg,
+    rgba(120, 96, 56, 0.34),
+    rgba(255, 255, 255, 0.92) 62%
+  );
+  box-shadow: -0.5px -0.5px 1px rgba(60, 40, 10, 0.22);
+  transition: height 160ms ease, width 160ms ease;
+  pointer-events: none;
+}
+
+.sticky-notes .sticky-note:hover .sticky-note-curl,
+.sticky-notes .sticky-note.is-lifting .sticky-note-curl {
+  width: 0.9rem;
+  height: 0.34rem;
+}
+
+/*
+ * 撕下 / 贴回那两下。`--note-dx` / `--note-dy` / `--note-tilt` 就是外层一直在用的
+ * 那几个变量，所以 keyframes 从「它现在待的地方」起飞、落回 —— 不写死任何坐标
+ * （与书房其余动画同一条规矩）。
+ */
+@keyframes sticky-note-tear {
+  0% {
+    transform: translate(var(--note-dx, 0px), var(--note-dy, 0px)) rotate(var(--note-tilt, 0deg));
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--note-dx, 0px), calc(var(--note-dy, 0px) - 3.4rem))
+      rotate(calc(var(--note-tilt, 0deg) + 15deg)) scale(1.06);
+    opacity: 0;
+  }
+}
+
+@keyframes sticky-note-back {
+  0% {
+    transform: translate(var(--note-dx, 0px), calc(var(--note-dy, 0px) - 3rem))
+      rotate(calc(var(--note-tilt, 0deg) + 12deg));
+    opacity: 0;
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--note-dx, 0px), var(--note-dy, 0px)) rotate(var(--note-tilt, 0deg));
+    opacity: 1;
+  }
+}

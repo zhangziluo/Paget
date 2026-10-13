@@ -1,0 +1,16 @@
+# 这台仓库用哪个工具链 —— 也是「编辑器用哪个 rust-analyzer」的开关。
+#
+# 为什么需要这一行（而不是什么都不写）：VS Code 的 rust-analyzer 扩展默认用**自己随包**
+# 的 server（本机是 0.3.3073，2026-10 构建），而它只会在工作区里找到
+# `rust-toolchain.toml` **且其中列了 `rust-analyzer` 组件** 时才改用
+# `rustup which rust-analyzer` 那个（见扩展 out/main.js 的 server 选择逻辑）。
+# 两边配对不上时，工具链自带的 proc-macro server（1.87.0，2025-05）会在反序列化
+# 第一个请求时直接 panic（`assert!(id < InternId::MAX)`），于是整个 crate 的
+# `#[derive]` / `#[tauri::command]` 全被报成
+# "all proc-macro server workers have exited" —— 那是工具链的事，不是代码的事。
+#
+# channel 写 "stable"：本机的 stable 就是 Cargo.toml 里 `rust-version = "1.87"` 所对应的
+# 那个工具链，rustup 不会为了它另下一份；`components` 让缺组件时自动补上。
+[toolchain]
+channel = "stable"
+components = ["rust-analyzer"]

@@ -1,0 +1,63 @@
+# wreader -- Paget 的内核（Python）：书库、阅读位置、统计、成就、格式转换。
+#
+# Build/install (editable):  pip install -e core
+# 内核是**无头**的：界面按 JSON-RPC 调 `python -m wreader.serve`（见 core/README.md）。
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wreader"
+version = "0.1.0"
+description = "Paget 的阅读内核：书库索引、阅读位置、统计与成就（无头 JSON-RPC）。"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+keywords = ["reader", "novel", "epub", "txt", "terminal"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Topic :: Text Processing",
+]
+# NOTE: `curses` ships with the Python standard library on macOS/Linux, so it is
+# intentionally NOT listed as a dependency here. Windows needs the extra below:
+#   pip install -e ".[windows]"
+dependencies = [
+    "chardet",
+    "rich",
+    # `requests` carries the one networked feature left: the optional geo lookup
+    # behind the geography achievements (`stats.geo_lookup`).
+    "requests",
+]
+
+[project.optional-dependencies]
+windows = ["windows-curses"]
+dev = ["pytest>=8"]
+
+# 这里**故意没有** `[project.scripts]`：内核只给界面用（`python -m wreader.serve`），
+# 不在用户机器上装一条命令行 —— 要跑终端阅读器就 `python -m wreader.cli`。
+
+[tool.setuptools.packages.find]
+include = ["wreader*"]
+
+[tool.setuptools.package-data]
+wreader = ["data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+
+# Static type checking: `npx pyright` (or `python -m pyright`) reads this section,
+# so a fresh clone reproduces the same 0-diagnostic result in CI.
+# NOTE: the Pylance extension ignores [tool.pyright] -- VS Code is pointed at the
+# same virtualenv through .vscode/settings.json instead.
+[tool.pyright]
+include = ["wreader", "tests", "tools"]
+exclude = [".venv", "build", "dist", "*.egg-info"]
+pythonVersion = "3.11"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "basic"

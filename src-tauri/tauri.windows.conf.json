@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "com.paget.app",
+  "bundle": {
+    "targets": ["msi", "nsis"],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "allowDowngrades": true,
+      "wix": {
+        "language": "zh-CN",
+        "upgradeCode": "b315b518-bd3b-5d3a-8ba7-da61bfb205ac"
+      },
+      "nsis": {
+        "languages": ["SimpChinese"],
+        "displayLanguageSelector": false,
+        "compression": "lzma",
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

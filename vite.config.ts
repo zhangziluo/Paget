@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-// @ts-expect-error type error without @types/node package
+// `node:process` needs no suppression here: vite's own types pull @types/node into this program,
+// and a bare `node:x` import only resolves when node's types actually are in the program.
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 

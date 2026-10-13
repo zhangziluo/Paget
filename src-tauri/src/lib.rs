@@ -38,11 +38,26 @@ pub struct RestoredBook {
     pub progress_restored: bool,
 }
 
+// NOTE on rust-analyzer's "all proc-macro server workers have exited" -- it shows up
+// on `#[derive]` / `#[tauri::command]` here (e.g. `archive_dir` below), and it is *not*
+// about this file.  The editor's rust-analyzer (0.3.3073, 2026-10) and the proc-macro
+// server that ships with the toolchain (1.87.0, 2025-05) disagree about the legacy
+// span protocol, so the server dies while deserializing the very first request:
+//
+//     thread 'main' panicked at .../span/src/lib.rs:415:
+//     assertion failed: id < InternId::MAX   (SyntaxContextId::from_u32)
+//
+// After that every `#[derive]` / `#[tauri::command]` in the crate is reported as a
+// failed macro expansion.  The cure is a *matching pair of binaries*, not a smaller
+// derive: `rust-toolchain.toml` pins the channel and lists the `rust-analyzer`
+// component, which is what makes the extension spawn the toolchain's own server.
+// `cargo check` is clean with or without it.
+
 
 /// Forward one RPC call to the reading core.
 ///
 /// This is the escape hatch that keeps the shell thin: the front end can reach any
-/// method of `wreader/serve.py` (`ping`, `list`, `toc`, `text`, `session`, ...)
+/// method of `core/wreader/serve.py` (`ping`, `list`, `toc`, `text`, `session`, ...)
 /// without a Rust command having to be added for each one.
 #[tauri::command]
 fn core_request(
@@ -306,18 +321,65 @@ fn reset_cache(state: State<'_, Db>) -> Result<(), String> {
 /// folder" the shelf promises.  `tauri-plugin-dialog` cannot express that (its
 /// `open` chooses either files or directories, never both), which is why the panel
 /// is built here instead of pulling the plugin in.
+///
+/// Windows / Linux 走下面那个 `desktop_picker`（`tauri-plugin-dialog`）：那边的系统对话框
+/// 做不到「文件与文件夹同框」（`IFileOpenDialog` 开了 `FOS_PICKFOLDERS` 就只能选文件夹、
+/// 不开就只能选文件），所以界面先问一句要哪一种 —— 见 [`picker_modes`] 与 `Shelf.tsx`
+/// 那只篮子上的小菜单。
+/// 「＋ 导入」这一步要挑什么（界面递来的 `mode`）。
+///
+/// macOS 那个面板（`NSOpenPanel`）文件与文件夹同框、还能多选，所以那边**不认这个参数**；
+/// Windows / Linux 的系统对话框只能二选一，于是界面先问一句「文件还是文件夹」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+enum ImportPick {
+    /// 挑文件（默认档）
+    Files,
+    /// 挑文件夹 —— 内核 `import` 会递归找全里面的书（`library.py` 的 rglob）
+    Folder,
+}
+
+impl ImportPick {
+    /// 把界面递来的字符串收成枚举。认不出来的一律当 `Files`：老前端不传这个参数，
+    /// 新前端传错也还能用（比弹一个错好）。
+    ///
+    /// （macOS 上没人调它 —— 那边不认 `mode`；压掉那条 dead_code 警告免得糊住真问题。）
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    fn parse(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            Some("folder") | Some("dir") | Some("directory") => Self::Folder,
+            _ => Self::Files,
+        }
+    }
+}
+
+/// 「＋」按一下之后该弹什么：`["panel"]` = 系统面板一次挑完（macOS），
+/// `["files", "folder"]` = 先问一句挑文件还是挑文件夹（Windows / Linux）。
+fn picker_modes() -> Vec<&'static str> {
+    if cfg!(target_os = "macos") {
+        vec!["panel"]
+    } else {
+        vec!["files", "folder"]
+    }
+}
+
+/// 把上面那条判定交给界面（挂在篮子上，见 `Shelf.tsx` 的 `pickerModes`）。
 #[tauri::command]
-fn pick_import_paths(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+fn import_picker_modes() -> Vec<&'static str> {
+    picker_modes()
+}
+
+#[tauri::command]
+fn pick_import_paths(app: tauri::AppHandle, mode: Option<String>) -> Result<Vec<String>, String> {
     #[cfg(target_os = "macos")]
     {
+        // macOS 的面板本来就能同框多选，`mode` 在这里没有意义
+        let _ = mode;
         return macos_picker::pick(app);
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // 其它平台没有自带的选择器（本项目不再引 tauri-plugin-dialog）；
-        // 内核的命令行 `werd import <路径>` 仍然能导入。
-        let _ = app;
-        Err("图形化选择电子书目前只在 macOS 上提供；其它平台请用 `werd import <路径>`。".to_string())
+        return desktop_picker::pick(&app, ImportPick::parse(mode.as_deref()));
     }
 }
 
@@ -364,6 +426,48 @@ mod macos_picker {
             }
         }
         Ok(paths)
+    }
+}
+
+/// 非 macOS 的原生选择器（Windows / Linux）——「＋ 导入」在那两个平台上走这条。
+///
+/// 系统对话框做不到 macOS 那个面板的「文件与文件夹同框多选」：Windows 的 `IFileOpenDialog`
+/// 开了 `FOS_PICKFOLDERS` 就只能选文件夹、不开就只能选文件。所以退一步、由界面分成两项
+/// （见 [`picker_modes`]），这里按 `want` 弹其中一种：
+///
+/// * `Files`  —— 多选文件（`blocking_pick_files`）
+/// * `Folder` —— 多选文件夹（`blocking_pick_folders`）；内核 `import` 会递归找全里面的书
+///
+/// 两档都**不加扩展名过滤**：与 macOS 那个面板一样什么都不挡 —— 内核自己会挑出 `.txt` /
+/// `.epub` / `.mobi` / `.azw3` / `.pdf`，别的类型会明确报「不支持」，而不是让用户在对话框里找不到文件。
+///
+/// 这个模块在 macOS 上**也会被编译**（只是没人调用它，靠 `allow(dead_code)` 压掉警告）：
+/// 它只能在 Windows 上跑，而开发机是 macOS —— 不这样写，这段代码就一辈子过不了类型检查。
+#[allow(dead_code)]
+mod desktop_picker {
+    use tauri_plugin_dialog::DialogExt;
+
+    use super::ImportPick;
+
+    /// 弹一次原生对话框；用户取消就返回空列表（与 macOS 那个面板一致）。
+    pub fn pick(app: &tauri::AppHandle, want: ImportPick) -> Result<Vec<String>, String> {
+        // 标题与 macOS 面板上那句保持一致
+        let dialog = app.dialog().file().set_title("导入电子书");
+        // `blocking_*` 的文档明说**不能在主线程上调**（会和事件循环互相等死），而同步命令
+        // 恰好就在主线程上跑 —— 所以把这一次等待丢给一条临时线程。
+        let picked = std::thread::spawn(move || match want {
+            ImportPick::Folder => dialog.blocking_pick_folders(),
+            ImportPick::Files => dialog.blocking_pick_files(),
+        })
+        .join()
+        .map_err(|_| "选择器所在的线程崩了".to_string())?;
+        // 取消 → None → 空列表；桌面平台上 `FilePath` 一定是真路径（手机端才有 content://）
+        Ok(picked
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|path| path.into_path().ok())
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect())
     }
 }
 
@@ -796,12 +900,126 @@ mod cover_tests {
 
         let _ = std::fs::remove_dir_all(&root);
     }
+
+}
+
+/// 「＋ 导入」那两条命令的边角：`mode` 只认两个值，菜单档数跟着平台走。
+#[cfg(test)]
+mod picker_tests {
+    use super::{picker_modes, ImportPick};
+
+    #[test]
+    fn the_import_pick_argument_falls_back_to_files() {
+        // 界面明确说要文件夹
+        assert_eq!(ImportPick::parse(Some("folder")), ImportPick::Folder);
+        // 大小写与空格都别计较（界面那边是照枚举写的，但别的调用方可能手打）
+        assert_eq!(ImportPick::parse(Some(" FOLDER ")), ImportPick::Folder);
+        assert_eq!(ImportPick::parse(Some("directory")), ImportPick::Folder);
+        assert_eq!(ImportPick::parse(Some("files")), ImportPick::Files);
+        // 老前端不传这个参数 → 文件；传了看不懂的值 → 也是文件（不弹错）
+        assert_eq!(ImportPick::parse(None), ImportPick::Files);
+        assert_eq!(ImportPick::parse(Some("胡写的")), ImportPick::Files);
+    }
+
+    #[test]
+    fn the_picker_menu_matches_the_platform() {
+        // macOS 那个面板文件与文件夹同框 → 一项；其它平台的对话框二选一 → 两项
+        if cfg!(target_os = "macos") {
+            assert_eq!(picker_modes(), vec!["panel"]);
+        } else {
+            assert_eq!(picker_modes(), vec!["files", "folder"]);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* PDF：图片模式（原样发字节给前端渲染）+ 「转换成文字」                    */
+/* ------------------------------------------------------------------ */
+
+/// 一份 PDF 最多发多大（512 MB）：正规电子书远小于它，超了多半是别的东西。
+const MAX_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// The bytes of a PDF book's own file, for the image-mode reader.
+///
+/// A PDF is browsed as **pictures** by default, so the front end needs the file
+/// itself.  It cannot touch the disk, and the file is far too big to hand over as
+/// JSON, so it is streamed back through [`tauri::ipc::Response`] -- raw bytes, not
+/// an array of numbers.
+///
+/// The path is never guessed by the front end: it comes out of the core's record
+/// for that book, and only a `file_path` ending in `.pdf` is served, so this
+/// command can hand out a PDF and nothing else.
+#[tauri::command]
+fn book_source(
+    core: State<'_, CoreState>,
+    book_id: String,
+) -> Result<tauri::ipc::Response, String> {
+    // 书必须在库里：路径只从内核记录里取（前端永远不猜路径）
+    let lookup = core
+        .call("get_book", serde_json::json!({ "book_id": book_id }))
+        .map_err(|err| err.to_string())?;
+    let record = lookup.get("book").cloned().unwrap_or(Value::Null);
+    // 书没了（被 CLI 删掉 / id 写错）：直说
+    if record.is_null() {
+        return Err(format!("unknown book id: {}", book_id));
+    }
+    let path = std::path::PathBuf::from(record_text(&record, "file_path"));
+    // 只发 PDF：图片模式的正文来源就是它（别的格式前端有自己的读法）
+    let is_pdf = path
+        .extension()
+        .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false);
+    if !is_pdf {
+        return Err(format!("not a PDF book: {}", path.display()));
+    }
+    // 先看体积再读：免得把一个几百 MB 的东西整个塞进内存
+    let size = std::fs::metadata(&path)
+        .map_err(|err| format!("cannot read {}: {}", path.display(), err))?
+        .len();
+    if size > MAX_SOURCE_BYTES {
+        return Err(format!(
+            "{} is too large to send ({} bytes)",
+            path.display(),
+            size
+        ));
+    }
+    // 原样发字节：前端把它喂给 pdf.js 一页页画出来
+    let bytes = std::fs::read(&path)
+        .map_err(|err| format!("cannot read {}: {}", path.display(), err))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// 「转换成文字」：让内核抽出这本 PDF 的文字层并记下来。
+///
+/// Deliberately **async**: extracting a 700 page book takes about a minute, and a
+/// synchronous command would hold the main thread (the window stops repainting)
+/// for that whole minute.  The work runs on the blocking pool instead, so the UI
+/// keeps drawing its「正在转换」state -- one of the few commands that is not sync
+/// on purpose (see the note about sync commands near the top of this file).
+#[tauri::command]
+async fn convert_pdf(app: tauri::AppHandle, book_id: String) -> Result<Value, String> {
+    // 换一个 AppHandle 进阻塞线程池：主线程一个字节都不占
+    let handle = app.clone();
+    let work = tauri::async_runtime::spawn_blocking(move || {
+        // 内核的 convert_pdf：抽文字层 + 更新索引（扫描版会明确报「没有文字层」）
+        handle
+            .state::<CoreState>()
+            .call("convert_pdf", serde_json::json!({ "book_id": book_id }))
+            .map_err(|err| err.to_string())
+    });
+    // 线程池里的 panic 也变回一条普通错误，别把界面挂在一个永不落地的 Promise 上
+    work.await
+        .map_err(|err| format!("the conversion worker died: {}", err))?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    // Windows / Linux 上再挂一个对话框插件（macOS 走自带的 NSOpenPanel，见 macos_picker）：
+    // 那边不必注册它，注册了也只是白多一份用不到的 JS API。
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_dialog::init());
+    builder
         .setup(|app| {
             // 让内核把数据放进项目文件夹（数据 Tab 显示的四个路径都会落在里面）
             use_project_data_root();
@@ -828,8 +1046,11 @@ pub fn run() {
             set_gui_setting,
             reset_cache,
             pick_import_paths,
+            import_picker_modes,
             cover_info,
             cover_save,
+            book_source,
+            convert_pdf,
             archive_dir,
             archive_list,
             archive_seal,

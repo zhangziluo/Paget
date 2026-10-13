@@ -27,7 +27,7 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "binaries/werd-core": "core"
+      "binaries/paget-core": "core"
     },
     "icon": [
       "icons/32x32.png",

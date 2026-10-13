@@ -1,0 +1,93 @@
+# 在 GitHub 的 Windows runner 上打 MSI + NSIS 安装包 —— 本机没有 Windows 时走这条。
+#
+# 为什么需要它：MSI **只能**在 Windows 上打（WiX 只能在 Windows 上跑，Tauri 官方文档
+# 原话），而随包分发的那份内核也必须在 Windows 上冻（PyInstaller 不能交叉编译）。
+# 所以要么找台 Windows，要么把仓库推到 GitHub 让这台 runner 替你干。
+#
+# 用法：Actions → windows-installer → Run workflow；产物在该次运行的 Artifacts 里
+# （paget-windows-installers）。推 `v*` 标签也会跑一次。
+#
+# 前置：本仓库要先有一个 GitHub 远端（目前它是纯本地仓库）。内核（core/）就在本仓库里，
+# 所以这里只 checkout 一次，不需要第二个仓库、也不用配 token。
+name: windows-installer
+
+on:
+  # 手动触发：什么时候打由你决定
+  workflow_dispatch:
+  # 推版本标签时也打一次（版本号来自 tauri.conf.json 的 version）
+  push:
+    tags: ["v*"]
+
+jobs:
+  installers:
+    runs-on: windows-latest
+    # 这个工作流只读仓库、只往 Artifacts 里写东西：把 GITHUB_TOKEN 收到最小权限
+    # （默认权限随仓库设置而变，新仓库常常是 read/write 全给）。
+    permissions:
+      contents: read
+    # Windows 上一次从零构建（Rust release 编译 + 冻内核 + 下载 WiX / NSIS / WebView2）
+    # 大约半小时；90 分钟是「网络卡住或编译挂着不动」时早点红掉的界限，
+    # 不是对正常耗时的估算（默认 6 小时会白占一台 runner）。
+    timeout-minutes: 90
+    env:
+      # 内核默认就在 workspace 里的 core/（build_core.py / paget-core.spec 都认这个默认值）；
+      # 这里只把「用哪个 Python 冻」写死成 runner 上那个装了 wreader 的解释器。
+      PAGET_CORE_PYTHON: python
+    steps:
+      - name: 取出仓库（前端 + Rust 壳 + core/ 内核都在里面）
+        uses: actions/checkout@v4
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # 缓存 ~/.npm，键是 package-lock.json 的哈希 —— npm ci 每次都要重下同一批包
+          cache: npm
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          # 缓存 pip 的下载缓存，键是 core/pyproject.toml 的哈希（chardet / requests / PyInstaller）
+          cache: pip
+          cache-dependency-path: core/pyproject.toml
+      - name: Rust（windows-latest 默认就是 x86_64-pc-windows-msvc）
+        uses: dtolnay/rust-toolchain@stable
+      - name: 缓存 cargo 的 target/
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: 装内核与 PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e core
+          python -m pip install pyinstaller
+      # 先把环境报清楚（查环境会在缺失时明确报错，比后面构建到一半失败好读）
+      - name: 查环境
+        run: python packaging/build_windows.py --check
+      # MSI 那一步是 WiX 在干，而 WiX 的 light.exe 要系统的 VBSCRIPT（本仓库 README 的
+      # 「Windows 上要注意的三件事」第一条记的就是它：Win11 24H2 起它是可选功能，
+      # 更新版的 Server 上也不一定带着）。runner 上没人去「设置 → 可选功能」手动勾，
+      # 所以这里尽力打开：本来就在就什么都不做，打不开也不挡路（真缺了会在 MSI 那一步报
+      # `failed to run light.exe`，这段日志就是把原因摆出来）。
+      - name: 确保 MSI 的 VBSCRIPT 可用（缺了尽力打开，不挡路）
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          if (Test-Path "$env:SystemRoot\System32\vbscript.dll") {
+            Write-Host "VBScript: 已可用"
+            exit 0
+          }
+          Write-Host "VBScript: 没找到 vbscript.dll —— 用 DISM 打开可选功能 VBSCRIPT（3010 = 需重启）"
+          dism /online /enable-feature /featurename:VBSCRIPT /all /norestart
+          exit 0
+      # npm ci → 冻内核（含协议烟测）→ tauri build --bundles msi nsis
+      - name: 打安装包
+        run: python packaging/build_windows.py
+      - name: 收产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: paget-windows-installers
+          # MSI（要管理员，装 Program Files）与 NSIS 的 -setup.exe（免管理员）
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

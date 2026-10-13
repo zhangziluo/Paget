@@ -1,6 +1,6 @@
-"""Entry point for the frozen reading core (the `werd-core` sidecar).
+"""Entry point for the frozen reading core (the `paget-core` sidecar).
 
-PyInstaller needs a **script** to freeze, and `wreader/serve.py` cannot play that
+PyInstaller needs a **script** to freeze, and `core/wreader/serve.py` cannot play that
 role: it starts with relative imports (`from . import config, library, ...`),
 which only resolve when the file is imported as part of its package, not when it
 is executed as `__main__`.  This launcher imports it absolutely instead, so the

@@ -1,0 +1,2099 @@
+"""Book library management.
+
+The index lives at ``~/.wreader/library.json`` (see :mod:`wreader.config`) and has three
+top level sections::
+
+    {
+      "books":        {"<book_id>": { ...one record per book... }},
+      "stats":        {"total_books": 0, "total_read_time": 0,
+                       "daily_read_time": {}},
+      "achievements": {"unlocked": [], "progress": {}}
+    }
+
+One book record looks like::
+
+    {
+      "title": "三体", "author": "刘慈欣",
+      "file_path": "/home/you/novels/三体_utf8.txt",
+      "encoding": "GB2312", "total_lines": 812, "total_words": 208400,
+      "chapters": [{"title": "第一章 科学边界", "line_start": 0}],
+      "progress": {"current_line": 0, "percentage": 0.0, "last_read": null,
+                   "total_time_seconds": 0, "sessions": []},
+      "tags": [], "import_date": "2026-09-21"
+    }
+
+Five file types are accepted: plain ``.txt``, plus ``.epub``, ``.mobi``,
+``.azw3`` and ``.pdf`` electronic books, which are turned into text on import (an
+external converter such as Calibre's ``ebook-convert`` or ``pdftotext`` is used
+when it is installed, and a built-in extractor otherwise -- see
+:mod:`wreader.mobi` and :mod:`wreader.pdf`).
+
+Importing always stores the text as UTF-8 in the novels directory
+(``<title>_utf8.txt``) so the reader never deals with encodings again.
+``book_id`` is the SHA-1 of the converted text, which makes importing the same
+book twice a no-op.  ``total_lines`` and every ``line_start`` are indexes into
+``text.split("\\n")`` of that stored file.
+"""
+
+# 延迟求值类型注解
+from __future__ import annotations
+
+# chardet：猜文本文件编码（BOM 认不出来时的主力）
+import chardet
+# 各种 BOM 常量的来源
+import codecs
+# 用 SHA-1 给书生成稳定 id，重复导入同一本书会得到同一个 id
+import hashlib
+# html.unescape 把 epub 里的 &amp; 之类实体还原
+import html
+# 读写 library.json
+import json
+# 封面图没写 media-type 时按文件名后缀猜类型
+import mimetypes
+# os.replace 做原子写入
+import os
+# epub 内部是 zip，里面的路径用 posix 风格，要靠它拼路径
+import posixpath
+# 正则在章节识别、文件名解析、HTML 清理里到处都用
+import re
+# shutil.which 找外部转换工具
+import shutil
+# 调用 ebook-convert / epub2txt 这类外部程序
+import subprocess
+# 解 epub 时用临时目录放中间产物
+import tempfile
+# epub 本质是 zip，用标准库直接读
+import zipfile
+# dataclass 定义导入结果；field 用来给字段设默认工厂
+from dataclasses import dataclass, field
+# 记录导入日期（YYYY-MM-DD）
+from datetime import datetime
+# 路径处理
+from pathlib import Path
+# 类型注解
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+# 解析 epub 的 container.xml / opf（都是 XML）
+from xml.etree import ElementTree
+
+# 同包引用 config，拿数据目录和 novels 目录
+from . import config
+# MOBI / AZW3 的正文与封面提取（标准库实现，见 wreader/mobi.py）
+from . import mobi
+# PDF 的正文与封面提取（标准库实现，见 wreader/pdf.py）
+from . import pdf
+
+# 支持导入的书籍后缀：纯文本，加上四种电子书（epub 是 zip，mobi/azw3 是 Palm 数据库，
+# pdf 是对象 + 流）
+SUPPORTED_EXTENSIONS: Tuple[str, ...] = (".txt", ".epub", ".mobi", ".azw3", ".pdf")
+
+# 需要先解出正文的电子书后缀（其余都按纯文本读）
+EBOOK_EXTENSIONS: Tuple[str, ...] = (".epub", ".mobi", ".azw3", ".pdf")
+
+# 外部 epub 转换工具，按这个顺序尝试；都没装才用内置提取器
+#: External epub converters, tried in this order before the built-in extractor.
+EPUB_TOOLS: Tuple[str, ...] = ("ebook-convert", "epub2txt")
+
+# 外部 MOBI/AZW3 转换工具（Calibre 的 ebook-convert 两种都认得）；都没装就走内置提取器
+#: External MOBI/AZW3 converters, tried before the built-in extractor.
+MOBI_TOOLS: Tuple[str, ...] = ("ebook-convert",)
+
+# 外部 PDF 转换工具（poppler 的 pdftotext：桌面 Linux/macOS 上最常见）；没装就走内置提取器
+#: External PDF converters, tried before the built-in extractor.
+PDF_TOOLS: Tuple[str, ...] = ("pdftotext",)
+
+# 封面图的媒体类型 → 落盘用的扩展名（桌面壳只认这几种，别的当作没有封面）
+_COVER_EXTENSIONS: Dict[str, str] = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+
+#: 封面图体积上限：超过就不落盘（界面上那张卡片才 300×420，用不着更大的图）
+MAX_COVER_BYTES: int = 8 * 1024 * 1024
+
+# book_id 取 SHA-1 的前 12 位，够用又短
+_ID_LENGTH = 12
+# 超过这个长度的行不可能被当作章节标题（避免把长句误判成标题）
+_MAX_CHAPTER_TITLE_LENGTH = 60
+
+
+# 书库读、写、转换出错时统一抛这个异常
+class LibraryError(Exception):
+    """Raised when the library cannot be read, written or converted."""
+
+
+def empty_progress() -> Dict[str, Any]:
+    """Return a fresh, unread progress block."""
+    # 每本书都从这份"零进度"结构开始
+    return {
+        # 读到第几行（0 起始）
+        "current_line": 0,
+        # 百分比 0-100
+        "percentage": 0.0,
+        # 上次阅读时间，没读过就是 None
+        "last_read": None,
+        # 累计阅读秒数
+        "total_time_seconds": 0,
+        # 每次阅读会话的记录
+        "sessions": [],
+        # 书签列表
+        "bookmarks": [],
+        # 是否标记为"已读完"
+        "finished": False,
+    }
+
+
+def normalise_bookmarks(raw: Any) -> List[Dict[str, Any]]:
+    """Return a clean, line ordered ``bookmarks`` list.
+
+    Plain integers are accepted as well as full records, so a hand written
+    ``"bookmarks": [12, 40]`` still works.
+    """
+    # 规整后的书签
+    marks: List[Dict[str, Any]] = []
+    # 不是列表（None、字典等）就当作没有书签
+    if isinstance(raw, list):
+        for item in raw:
+            # 完整记录形式：字典且带 line 字段
+            if isinstance(item, dict) and item.get("line") is not None:
+                # max(0, ...) 防止手改文件写出负数行号
+                marks.append(
+                    {
+                        "line": max(0, int(item.get("line") or 0)),
+                        "label": str(item.get("label") or ""),
+                        "created": str(item.get("created") or ""),
+                    }
+                )
+            # 简写形式：直接写一个行号
+            elif isinstance(item, int):
+                marks.append({"line": max(0, item), "label": "", "created": ""})
+    # 按行号升序排，保证书签列表稳定有序
+    marks.sort(key=lambda mark: mark["line"])
+    return marks
+
+
+def empty_library() -> Dict[str, Any]:
+    """Return a library document that contains no books yet."""
+    # 顶层三个段落：书、统计、成就
+    return {
+        "books": {},
+        "stats": {"total_books": 0, "total_read_time": 0, "daily_read_time": {}},
+        "achievements": {"unlocked": [], "progress": {}},
+    }
+
+
+def write_json(path: Path, payload: Dict[str, Any]) -> None:
+    """Write *payload* to *path* atomically.
+
+    Public because the shelf layout (``wreader.shelf``) keeps its own little
+    document beside the index and must be written the same way: a half written
+    file would look like "the shelf lost its arrangement".
+    """
+    # 目录不存在就先建出来
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # 先写同目录的临时文件
+    temporary = path.with_name(path.name + ".tmp")
+    # UTF-8 打开，ensure_ascii=False 让中文原样写、indent=2 方便人看
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        # 结尾补一个换行
+        handle.write("\n")
+    # 原子改名成正式文件
+    os.replace(str(temporary), str(path))
+
+
+def _today() -> str:
+    # 今天的日期字符串，形如 2026-09-21
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _normalise_book(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Return *record* with every documented field present."""
+    # 先用一份"带默认值的干净记录"打底，缺字段就自动补上
+    book: Dict[str, Any] = {
+        "title": str(record.get("title") or "untitled"),
+        "author": str(record.get("author") or "unknown"),
+        "file_path": str(record.get("file_path") or ""),
+        # 图片模式的 pdf 用这三个键：format = "pdf"、pages = 页数、
+        # text_path = 转换成文字之后的 `<title>_utf8.txt`（没转之前是空串）。
+        # 其它格式的记录里它们是空值——所以老索引读回来与从前逐字一致。
+        "format": str(record.get("format") or ""),
+        "pages": int(record.get("pages") or 0),
+        "text_path": str(record.get("text_path") or ""),
+        "encoding": str(record.get("encoding") or "utf-8"),
+        "total_lines": int(record.get("total_lines") or 0),
+        "total_words": int(record.get("total_words") or 0),
+        "chapters": [],
+        "progress": empty_progress(),
+        "tags": [],
+        "import_date": str(record.get("import_date") or ""),
+    }
+    # 章节列表：只保留形状正确的项
+    chapters = record.get("chapters") or []
+    if isinstance(chapters, list):
+        for chapter in chapters:
+            if isinstance(chapter, dict):
+                book["chapters"].append(
+                    {
+                        "title": str(chapter.get("title") or ""),
+                        "line_start": int(chapter.get("line_start") or 0),
+                    }
+                )
+    # 进度：以 empty_progress 为模板，只吸收文件里出现过的键
+    progress = record.get("progress")
+    if isinstance(progress, dict):
+        known = empty_progress()
+        # 这样多出来的野字段会被丢掉，缺失的字段保持默认值
+        book["progress"].update(
+            {key: progress[key] for key in known if key in progress}
+        )
+    # 书签单独规整（支持简写的纯行号）
+    book["progress"]["bookmarks"] = normalise_bookmarks(
+        book["progress"].get("bookmarks")
+    )
+    # finished 强制成 bool，避免文件里写成字符串
+    book["progress"]["finished"] = bool(book["progress"].get("finished"))
+    # 标签：允许写成逗号分隔的字符串，统一成去空白的列表
+    tags = record.get("tags") or []
+    if isinstance(tags, str):
+        tags = tags.split(",")
+    book["tags"] = [str(tag).strip() for tag in tags if str(tag).strip()]
+    return book
+
+
+#: 已解析好的书库：``(文件签名, 文档)`` —— 见 `read_library`。
+#:
+#: 同一份 ``library.json`` 只解析一次 —— 67 本、1.1MB 时「读 + json.load + 逐本规范化」
+#: 要 40–60ms，而它**每次 RPC 调用都要付一遍**（`list` 一次、每读一屏正文一次…），
+#: 书一多就明显卡。文件被**别的进程**改过（终端 `werd`、手改、另一台机同步进来）
+#: 签名就变，缓存自然作废；本进程写盘时由 `save_library` 换成刚写下去的那一份。
+_LIBRARY_CACHE: Optional[Tuple[Tuple[str, int, int, int], Dict[str, Any]]] = None
+
+
+def _library_signature(path: Path) -> Tuple[str, int, int, int]:
+    """文件的「身份」：路径 + 修改时间（纳秒）+ 大小 + inode；stat 拿不到就给一个恒不相等的签名。
+
+    带上 inode 是因为写盘走的是「临时文件 + 改名」（原子写）：改名换的是 inode，
+    哪怕文件系统的时间戳只有秒级精度、大小又碰巧一样，也认得出来这是新的一份。
+    """
+    try:
+        info = path.stat()
+        return (str(path), info.st_mtime_ns, info.st_size, info.st_ino)
+    except OSError:
+        # 读不到 stat（文件刚被删、权限变了）：这一份不当缓存用
+        return (str(path), -1, -1, -1)
+
+
+def _parse_library(path: Path) -> Dict[str, Any]:
+    """把一份 ``library.json`` 读成规范化的文档（`load_library` / `read_library` 共用）。"""
+    try:
+        # UTF-8 读进来并解析成 Python 对象
+        with path.open("r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except json.JSONDecodeError as exc:
+        # 索引文件被写坏了：明确报错，不静默丢掉用户数据
+        raise LibraryError("{} is not valid JSON: {}".format(path, exc)) from exc
+    except OSError as exc:
+        raise LibraryError("cannot read {}: {}".format(path, exc)) from exc
+    # 顶层必须是对象
+    if not isinstance(raw, dict):
+        raise LibraryError("{} must contain a JSON object".format(path))
+
+    # 以空书库为模板，把文件里的内容一项项填进去
+    document = empty_library()
+    books = raw.get("books")
+    # 连 books 都没有说明文件结构不对
+    if not isinstance(books, dict):
+        raise LibraryError("{} is missing the 'books' mapping".format(path))
+    # 每条书记录都过一遍 _normalise_book，补齐字段、过滤脏数据
+    for book_id, record in books.items():
+        if isinstance(record, dict):
+            document["books"][str(book_id)] = _normalise_book(record)
+
+    # 统计段落整体并入（里面可能有 total_read_time、daily_read_time 等）
+    stats = raw.get("stats")
+    if isinstance(stats, dict):
+        document["stats"].update(stats)
+        # daily_read_time 必须是字典，否则统计代码会崩
+        if not isinstance(document["stats"].get("daily_read_time"), dict):
+            document["stats"]["daily_read_time"] = {}
+    # 成就段落整体并入
+    achievements = raw.get("achievements")
+    if isinstance(achievements, dict):
+        document["achievements"].update(achievements)
+    # A missing or stale counter is always recomputed on the way out.
+    # 书数直接按实际记录数重算，避免计数器过期
+    document["stats"]["total_books"] = len(document["books"])
+    return document
+
+
+def load_library() -> Dict[str, Any]:
+    """Load the whole library document, filling in anything missing.
+
+    **每次都是全新的一份快照**（重新读盘、重新解析）：拿它改、再 `save_library()`
+    是标准改法。只想看看、又不想每次付解析钱（67 本 ≈ 40ms）的调用方用 `read_library()`。
+    """
+    # 索引文件位置：~/.wreader/library.json
+    path = config.library_file()
+    # 第一次运行还没有索引：返回空书库
+    if not path.exists():
+        return empty_library()
+    return _parse_library(path)
+
+
+def read_library() -> Dict[str, Any]:
+    """Read the library **without** re-parsing it when the file has not changed.
+
+    返回的是**内存里那一份**（同一份 ``library.json`` 只解析一次）：
+
+    - **只读用**。改它不算数（不会落盘，还会把缓存弄脏）—— 要改请走
+      `load_library()` + `save_library()`（后者会把缓存换成刚写下去的那份）。
+    - 文件被别的进程改过时（签名变了）会自动重新解析，所以终端 `werd` 写的进度
+      这边也看得到。
+    """
+    global _LIBRARY_CACHE
+    # 索引文件位置：~/.wreader/library.json
+    path = config.library_file()
+    # 第一次运行还没有索引：返回空书库
+    if not path.exists():
+        return empty_library()
+    # 文件没动过就把上次解析好的直接给出去（这一步是热路径里最贵的）
+    signature = _library_signature(path)
+    cached = _LIBRARY_CACHE
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    document = _parse_library(path)
+    _LIBRARY_CACHE = (signature, document)
+    return document
+
+
+def save_library(document: Dict[str, Any]) -> Path:
+    """Write *document* to the index, keeping ``stats.total_books`` honest."""
+    # 依次确保各段落存在（用 setdefault 只在缺失时才写入）
+    document.setdefault("books", {})
+    stats = document.setdefault("stats", {})
+    stats.setdefault("total_read_time", 0)
+    stats.setdefault("daily_read_time", {})
+    stats.setdefault("translations", 0)
+    # 写盘前刷新书目总数
+    stats["total_books"] = len(document["books"])
+    document.setdefault("achievements", {"unlocked": [], "progress": {}})
+    # 目标文件路径
+    path = config.library_file()
+    # 原子写入
+    write_json(path, document)
+    # 刚写下去的就是手上这一份：把缓存换成它，省掉下一次的重新解析
+    global _LIBRARY_CACHE
+    _LIBRARY_CACHE = (_library_signature(path), document)
+    return path
+
+
+def _title_key(item: Tuple[str, Dict[str, Any]]) -> Tuple[str, str]:
+    """Sort key giving a stable, case insensitive title order."""
+    # 解构出 (book_id, record)
+    book_id, book = item
+    # 先按标题小写排，标题相同时用 id 保证顺序稳定
+    return str(book.get("title", "")).lower(), book_id
+
+
+def get_book(book_id: str) -> Optional[Dict[str, Any]]:
+    """Return the record for *book_id*, or ``None`` when it is unknown."""
+    # 查不到返回 None，由调用方决定怎么提示
+    # 只读，所以走缓存那一份（每个 RPC 都要它：取正文、取目录、读书签…）
+    return read_library()["books"].get(str(book_id))
+
+
+def list_books() -> List[Tuple[str, Dict[str, Any]]]:
+    """Return ``(book_id, record)`` pairs ordered by title."""
+    # 按标题排序后的 (id, 记录) 列表
+    return sorted(read_library()["books"].items(), key=_title_key)
+
+
+def recent_books(limit: int = 3) -> List[Tuple[str, Dict[str, Any]]]:
+    """Return the *limit* most recently read ``(book_id, record)`` pairs.
+
+    Only books carrying a ``progress.last_read`` timestamp are listed, and the
+    newest reading time comes first -- the shortlist behind ``werd continue``.
+    """
+    # 收集读过的书，形如 (last_read 时间戳, book_id, 记录)
+    read: List[Tuple[str, str, Dict[str, Any]]] = []
+    for book_id, book in read_library()["books"].items():
+        # load_library 保证 progress 是 dict；这里再兜一层，防止手改的索引里有怪值
+        progress = book.get("progress") or {}
+        # last_read 是定长 ISO 字符串（YYYY-MM-DDTHH:MM:SS）；空或缺省 = 从没读过
+        stamp = str(progress.get("last_read") or "")
+        # 只有真正读过的书才进候选名单
+        if stamp:
+            read.append((stamp, str(book_id), book))
+    # 时间戳是定长格式，字典序就是时间序，倒序排即"最近读的排最前"
+    read.sort(key=lambda entry: entry[0], reverse=True)
+    # 只取前 limit 本（负数/0 就返回空），并把排序用的时间戳从结果里丢掉
+    return [(book_id, book) for _stamp, book_id, book in read[: max(0, int(limit))]]
+
+
+def position_percentage(position: int, total_lines: int) -> float:
+    """Return the progress of *position* as a percentage (0-100).
+
+    The rule is ``(position + 1) / total_lines``, so the first line is a hair
+    above zero and the **last line is exactly 100%**: reaching the end of a book
+    reads as "finished" instead of "one line short".
+    """
+    # 总行数不合法就当 0%
+    if total_lines <= 0:
+        return 0.0
+    # +1 是关键：读到最后一行时恰好 100%，不会显示 99.9%
+    fraction = (max(0, int(position)) + 1) / float(total_lines)
+    # 夹到 100 以内并保留一位小数
+    return round(min(fraction * 100.0, 100.0), 1)
+
+
+def progress_percent(book: Dict[str, Any]) -> float:
+    """Return the reading progress of *book* as a percentage (0-100)."""
+    # 取进度块（没有就当作空）
+    progress = book.get("progress") or {}
+    # 优先用记录里已存好的百分比（阅读器退出时算好写进去的）
+    stored = progress.get("percentage")
+    if stored:
+        return round(float(stored), 1)
+    # 没有存过的百分比，就用当前行号现算
+    total = int(book.get("total_lines") or 0)
+    current = int(progress.get("current_line") or 0)
+    if total > 0 and current > 0:
+        return position_percentage(current, total)
+    # 既没存也没读过：0%
+    return 0.0
+
+
+def human_words(count: int) -> str:
+    """Render a word count the way Chinese readers expect (``5.7万``)."""
+    value = int(count)
+    # 上亿就用"亿"
+    if value >= 100000000:
+        return "{:.1f}亿".format(value / 100000000.0)
+    # 上万就用"万"
+    if value >= 10000:
+        return "{:.1f}万".format(value / 10000.0)
+    # 否则直接显示数字
+    return str(value)
+
+
+def _delete_text_file(book: Dict[str, Any]) -> bool:
+    """Delete the converted text file of *book*; ``False`` when there was none.
+
+    The index is authoritative, so a missing or unreadable file is not an error:
+    it only means there was nothing left to delete.
+    """
+    # file_path 缺失或为空串：没有可删的东西（空路径的 name 也是空，跳过以免误删）
+    target = Path(str(book.get("file_path") or ""))
+    if not target.name:
+        return False
+    try:
+        # 删掉导入时写下的 UTF-8 正文
+        target.unlink()
+    except OSError:
+        # 文件早就不在了（或没权限）：删不掉不算错误
+        return False
+    # 正文旁边那张封面（导入 epub 时落下的）一起带走，别在 novels 里留孤儿
+    for extension in set(_COVER_EXTENSIONS.values()):
+        try:
+            target.with_suffix(extension).unlink()
+        except OSError:
+            # 没有封面（或删不掉）都不算错误
+            pass
+    return True
+
+
+def _drop_toc_cache(book_id: str) -> None:
+    """Best effort: delete the cached chapter table of *book_id*.
+
+    The cache is rebuildable, so every failure (no config, no cache file, no
+    permission) is swallowed -- it must never block removing a book.
+    """
+    try:
+        # 延迟导入：toc 依赖 library，模块级互相 import 会打结
+        from . import toc
+
+        # 缓存文件固定叫 <cache>/<book_id>_toc.json
+        toc.toc_cache_path(str(book_id)).unlink()
+    except (config.ConfigError, LibraryError, OSError):
+        # 反正是可重建的附属品：删不掉就留着
+        return
+
+
+def remove_book(book_id: str) -> Optional[Dict[str, Any]]:
+    """Drop *book_id* from the index and delete its converted text file."""
+    # 读出整个索引
+    document = load_library()
+    # pop 会同时"取出并删除"；不存在时返回 None
+    book = document["books"].pop(str(book_id), None)
+    if book is None:
+        return None
+    # 先把索引写回（索引是权威数据源）
+    save_library(document)
+    # 再删掉转换后的正文文件与目录缓存；删不掉也不回退，索引优先
+    _delete_text_file(book)
+    _drop_toc_cache(str(book_id))
+    return book
+
+
+def set_finished(book_id: str, finished: bool) -> Optional[Dict[str, Any]]:
+    """Mark one book as finished / unfinished (the GUI's "标记已读/未读").
+
+    Only ``progress.finished`` moves: the position, the reading time, the sessions
+    and the achievements are all left alone, so flipping this flag can never lose
+    reading progress.  Returns the updated record, or ``None`` for an unknown id.
+    """
+    # 读出整个索引
+    document = load_library()
+    # 取书；不在就是未知 id（调用方据此报错）
+    book = document["books"].get(str(book_id))
+    if book is None:
+        return None
+    # 进度块被手改坏了就先换一份空块，免得下面写字段时报错
+    progress = book.get("progress")
+    if not isinstance(progress, dict):
+        book["progress"] = empty_progress()
+        progress = book["progress"]
+    # 只动 finished 这一个开关
+    progress["finished"] = bool(finished)
+    # 落盘（save_library 会顺手刷新 stats 里的派生值）
+    save_library(document)
+    return book
+
+
+def set_metadata(
+    # 要改哪本书
+    book_id: str,
+    # 新书名（None = 不改）；空书名会被拒绝
+    title: Optional[str] = None,
+    # 新作者（None = 不改）；空串落成与导入一致的 "unknown"
+    author: Optional[str] = None,
+    # 新标签（None = 不改）：列表或逗号分隔的字符串都行
+    tags: Optional[Sequence[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Rewrite the title / author / tags of one book (the GUI's 「属性」 panel).
+
+    Correcting a label is *only* a label change: the converted text file, the
+    chapter table, the reading position, the durations and the achievements are
+    all left exactly as they are, so a typo fix can never cost reading progress.
+
+    The stored file keeps its old name on purpose -- ``file_path`` is storage,
+    while the index is what names the book (``werd list`` reads the title from
+    here), and renaming a file the reader may be holding open buys nothing.
+
+    Fields left as ``None`` keep their current value; an empty *title* raises
+    :class:`LibraryError`, because a nameless book is not addressable in the
+    shelf.  Returns the updated record, or ``None`` for an unknown id.
+    """
+    # 读出整个索引
+    document = load_library()
+    # 取书；不在就是未知 id（调用方据此报错）
+    book = document["books"].get(str(book_id))
+    if book is None:
+        return None
+    # 书名：给了就必须是个真名字（空名在书架上认不出来）
+    if title is not None:
+        cleaned = str(title).strip()
+        if not cleaned:
+            raise LibraryError("a book needs a non-empty title")
+        book["title"] = cleaned
+    # 作者：允许清空，落成 "unknown"（与 _normalise_book 同一条规则，重新读回不变样）
+    if author is not None:
+        book["author"] = str(author).strip() or "unknown"
+    # 标签：与 _normalise_book 同一套写法（字符串按逗号切开、去空白、丢空项）
+    if tags is not None:
+        raw = tags.split(",") if isinstance(tags, str) else list(tags)
+        book["tags"] = [str(tag).strip() for tag in raw if str(tag).strip()]
+    # 落盘（save_library 会顺手刷新 stats 里的派生值）
+    save_library(document)
+    return book
+
+
+def clear_library() -> List[Tuple[str, Dict[str, Any]]]:
+    """Remove every book record together with its converted text file.
+
+    Reading statistics and the achievements state are deliberately left alone:
+    clearing the library is about *which books you have*, not about how long you
+    have read them.  Returns the removed ``(book_id, record)`` pairs in title
+    order, so callers can report what went away.
+    """
+    # 读出索引，准备把书目一次性清空
+    document = load_library()
+    # 先拍一份快照：后面要按标题排序、还要照着它删文件
+    removed = [(str(book_id), book) for book_id, book in document["books"].items()]
+    # 本来就是空书库：什么都不用做（也不用写盘）
+    if not removed:
+        return []
+    # 先清空 books 再落盘；save_library 会顺手把 stats.total_books 归零
+    document["books"] = {}
+    save_library(document)
+    # 再删正文文件与目录缓存（同上，索引已经写好了，删不掉也不回退）
+    for book_id, book in removed:
+        _delete_text_file(book)
+        _drop_toc_cache(book_id)
+    return sorted(removed, key=_title_key)
+
+
+def prune_missing_books() -> List[Tuple[str, Dict[str, Any]]]:
+    """Drop records whose converted text file no longer exists.
+
+    This is the reconciliation behind "I deleted the file from the novels folder,
+    why does ``werd list`` still show it?": ``file_path`` is the only evidence a
+    book has, so a record pointing at a file that is gone has nothing left to
+    read.  A record **without** a path is kept -- an empty path means "unknown",
+    not "deleted", and guessing there could throw away a hand written record.
+
+    Returns the removed ``(book_id, record)`` pairs in title order.
+    """
+    # 读出索引，逐本核对正文文件还在不在
+    document = load_library()
+    missing: List[Tuple[str, Dict[str, Any]]] = []
+    for book_id, book in list(document["books"].items()):
+        # 正文文件路径（load_library 保证键存在，但可能是个空串）
+        path = str(book.get("file_path") or "")
+        # 空路径：没有任何线索可查，宁可保留
+        if not path:
+            continue
+        # 文件还在：这本不用动
+        if Path(path).is_file():
+            continue
+        # 文件没了：摘掉记录（正文早就不在了，不需要再删文件）
+        missing.append((str(book_id), document["books"].pop(book_id)))
+    # 一本都没少：不碰磁盘，免得每次运行都重写索引
+    if not missing:
+        return []
+    # 有变化才落盘
+    save_library(document)
+    # 顺手清掉这些书留下的目录缓存
+    for book_id, _book in missing:
+        _drop_toc_cache(book_id)
+    return sorted(missing, key=_title_key)
+
+
+# 转移包（``werd data export``）里每本书带的字段：进度块中与阅读历史有关的那些
+#: Progress keys copied by :func:`reading_data`.
+_READING_PROGRESS_KEYS: Tuple[str, ...] = (
+    "current_line",
+    "percentage",
+    "last_read",
+    "total_time_seconds",
+    "sessions",
+    "bookmarks",
+    "finished",
+)
+
+
+def _has_reading_history(progress: Dict[str, Any]) -> bool:
+    """Return ``True`` when *progress* carries at least one sign of reading."""
+    # 下面任何一种痕迹都算"读过"：会话、累计时长、位置、书签、读完、上次阅读时间
+    return bool(
+        progress.get("sessions")
+        or int(progress.get("total_time_seconds") or 0)
+        or int(progress.get("current_line") or 0)
+        or progress.get("bookmarks")
+        or progress.get("finished")
+        or progress.get("last_read")
+    )
+
+
+def reading_data(document: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the *reading history* of *document* in a transferable shape.
+
+    Only the parts describing time spent reading are copied: the global ``stats``
+    block plus, per book, the ``progress`` fields behind the totals.  File paths
+    and chapter tables are left out on purpose -- the other machine keeps its own
+    copy of the book, and ``book_id`` is the SHA-1 of the converted text, so the
+    two sides line up without any extra bookkeeping.
+    """
+    # 防御性取值：文档结构不对时返回一份空壳，而不是炸掉
+    stats = document.get("stats") if isinstance(document, dict) else None
+    stats = stats if isinstance(stats, dict) else {}
+    # 每日时长桶（连续天数与热力图都读它）
+    daily = stats.get("daily_read_time")
+    daily = daily if isinstance(daily, dict) else {}
+    # 全局部分：累计时长 + 每日桶
+    payload: Dict[str, Any] = {
+        "total_read_time": int(stats.get("total_read_time") or 0),
+        "daily_read_time": {
+            str(day): int(seconds or 0) for day, seconds in daily.items()
+        },
+        "books": {},
+    }
+    # 只带走有阅读痕迹的书：没打开过的书没有时长/会话可搬
+    books = document.get("books") if isinstance(document, dict) else None
+    books = books if isinstance(books, dict) else {}
+    # 先筛掉形状不对的记录，再按标题排序，导出的包稳定可读
+    records = [
+        (str(book_id), book)
+        for book_id, book in books.items()
+        if isinstance(book, dict)
+    ]
+    for book_id, book in sorted(records, key=_title_key):
+        progress = book.get("progress")
+        progress = progress if isinstance(progress, dict) else {}
+        # 从没读过：这本不用进包
+        if not _has_reading_history(progress):
+            continue
+        # 标题只为人看，真正的身份是 book_id
+        entry: Dict[str, Any] = {"title": str(book.get("title") or "")}
+        # 只带出现过的字段：缺的由合并方当作"没有"，也避免多份空列表共享同一个对象
+        for key in _READING_PROGRESS_KEYS:
+            if key in progress:
+                entry[key] = progress[key]
+        payload["books"][book_id] = entry
+    return payload
+
+
+# 把另一个包里的阅读数据并进本机文档（只加不减：时长相加、会话去重、书签取并集）
+def merge_reading_data(document: Dict[str, Any], incoming: Any) -> Dict[str, int]:
+    """Fold *incoming* reading data (see :func:`reading_data`) into *document*.
+
+    Durations add up, sessions are appended (each one only once, so importing the
+    same bundle twice is harmless), and a book's position is adopted only when the
+    local record has no reading history of its own.  Books this library does not
+    know about are skipped -- without the book there is nowhere to attach them --
+    and counted in the returned summary.  *document* is modified in place, in the
+    same spirit as :func:`wreader.session.accumulate_stats`.
+    """
+    # 进来的不是字典（手改坏的包）：什么都不合并
+    payload = incoming if isinstance(incoming, dict) else {}
+    # 书库与统计段落：load_library 之后一定存在，这里再兜一层
+    books = document.setdefault("books", {})
+    stats = document.setdefault("stats", {})
+    stats.setdefault("daily_read_time", {})
+    # 汇总：合并了几本书、跳过几本、搬过来多少秒（CLI 直接拿去打印）
+    summary = {"books": 0, "skipped": 0, "seconds": 0}
+    # 全局累计时长：两边相加
+    seconds = max(0, int(payload.get("total_read_time") or 0))
+    stats["total_read_time"] = int(stats.get("total_read_time") or 0) + seconds
+    summary["seconds"] = seconds
+    # 每日时长桶：按天相加（日期键统一成字符串，防手改出非字符串键）
+    daily = payload.get("daily_read_time")
+    if isinstance(daily, dict):
+        for day, value in daily.items():
+            key = str(day)
+            current = int(stats["daily_read_time"].get(key) or 0)
+            stats["daily_read_time"][key] = current + int(value or 0)
+    # 每本书：并会话、加时长、并书签
+    incoming_books = payload.get("books")
+    incoming_books = incoming_books if isinstance(incoming_books, dict) else {}
+    for book_id, entry in incoming_books.items():
+        book = books.get(str(book_id))
+        entry = entry if isinstance(entry, dict) else {}
+        # 本机还没有这本书：没有记录可挂，记一笔跳过
+        if not isinstance(book, dict):
+            summary["skipped"] += 1
+            continue
+        progress = book.get("progress")
+        if not isinstance(progress, dict):
+            progress = empty_progress()
+        # 本地完全没有阅读痕迹时，连对方的阅读位置一起接过来
+        fresh = not _has_reading_history(progress)
+        # 会话：按内容去重后追加（同一份包导两次不会把会话翻倍）
+        sessions = progress.get("sessions")
+        sessions = list(sessions) if isinstance(sessions, list) else []
+        known = {
+            json.dumps(item, ensure_ascii=False, sort_keys=True)
+            for item in sessions
+            if isinstance(item, dict)
+        }
+        for item in entry.get("sessions") or []:
+            # 形状不对的会话直接丢掉
+            if not isinstance(item, dict):
+                continue
+            # 序列化成键来判重：不预设字段，多一个少一个都能比较
+            marker = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            if marker in known:
+                continue
+            known.add(marker)
+            sessions.append(item)
+        # 起点是定长 ISO 字符串，字典序就是时间序
+        sessions.sort(
+            key=lambda item: str(item.get("start") or "")
+            if isinstance(item, dict)
+            else ""
+        )
+        progress["sessions"] = sessions
+        # 本书累计时长相加
+        progress["total_time_seconds"] = int(
+            progress.get("total_time_seconds") or 0
+        ) + int(entry.get("total_time_seconds") or 0)
+        # 书签取并集（normalise_bookmarks 负责按行号去重排序）
+        marks = list(progress.get("bookmarks") or [])
+        if isinstance(entry.get("bookmarks"), list):
+            marks.extend(entry["bookmarks"])
+        progress["bookmarks"] = normalise_bookmarks(marks)
+        # 读完了就一直是读完
+        progress["finished"] = bool(progress.get("finished")) or bool(
+            entry.get("finished")
+        )
+        # 上次阅读时间取更晚的那个（ISO 字符串比较即时间比较）
+        last = max(
+            str(progress.get("last_read") or ""), str(entry.get("last_read") or "")
+        )
+        progress["last_read"] = last or None
+        # 本机从没读过这本书：位置与百分比一并接过来，接着对方停下的地方读
+        if fresh:
+            progress["current_line"] = int(entry.get("current_line") or 0)
+            percentage = entry.get("percentage")
+            # 只接受真正的数字，字符串（手改的包）忽略
+            if isinstance(percentage, (int, float)):
+                progress["percentage"] = float(percentage)
+        book["progress"] = progress
+        summary["books"] += 1
+    return summary
+
+
+# 各种"换行/分段"字符：Windows CRLF、老 Mac CR、Unicode 行分隔符、垂直制表等
+_LINE_BREAKS = re.compile(r"\r\n|\r|\u2028|\u2029|\x0b|\x0c|\x85")
+# CJK 字符范围：日文假名 + 汉字扩展区 + 基本汉字 + 兼容汉字
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+# 拉丁单词：字母数字串，允许中间的 ' 或 -（don't、well-known 算一个词）
+_LATIN_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['\u2019-][A-Za-z0-9]+)*")
+
+
+def normalise_newlines(text: str) -> str:
+    """Collapse every line separator to ``\\n`` and drop trailing blank lines."""
+    # 所有换行变体统一成 \n，并去掉末尾多余的空行
+    return _LINE_BREAKS.sub("\n", text or "").rstrip("\n")
+
+
+# 认识的 BOM（字节序标记）：字节、对应解码器、正常情况下的编码名、解码失败时的编码名
+# 顺序很重要：UTF-32 LE 的 BOM 是以 UTF-16 LE 的 BOM 开头的，宽的必须先试
+#: Recognised byte order marks with the codec that consumes them and the label
+#: reported to the caller.  Order matters: a UTF-32 LE BOM *starts with* the
+#: UTF-16 LE BOM bytes, so the wider encoding has to be tested first.
+_BOM_CODECS: Tuple[Tuple[bytes, str, str, str], ...] = (
+    (codecs.BOM_UTF8, "utf-8-sig", "UTF-8 (BOM)", "UTF-8 (replaced)"),
+    (codecs.BOM_UTF32_LE, "utf-32", "UTF-32", "UTF-32 (replaced)"),
+    (codecs.BOM_UTF32_BE, "utf-32", "UTF-32", "UTF-32 (replaced)"),
+    (codecs.BOM_UTF16_LE, "utf-16", "UTF-16", "UTF-16 (replaced)"),
+    (codecs.BOM_UTF16_BE, "utf-16", "UTF-16", "UTF-16 (replaced)"),
+)
+
+
+def detect_and_decode(path: Path) -> Tuple[str, str]:
+    """Read *path* and return ``(text, encoding)``.
+
+    The encoding comes from a BOM when there is one, otherwise from
+    :mod:`chardet`.  A wrong guess falls back to UTF-8 and then GB18030, and as
+    a last resort the bytes are decoded with replacement so that a damaged file
+    still imports instead of aborting the whole run.
+
+    A BOM only states what the file *intends* to be, so it is never trusted
+    blindly: a UTF-32 document opens with the UTF-16 BOM bytes, and a partly
+    damaged UTF-16 file can carry an illegal surrogate.  The wider encoding is
+    therefore tested first, and a BOM family that fails to decode falls back to
+    replacement characters instead of raising.
+    """
+    try:
+        # 一次性读入全部字节（章节文件通常几 MB，可以接受）
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise LibraryError("cannot read {}: {}".format(path, exc)) from exc
+
+    # 第一优先：看文件开头的 BOM
+    for bom, codec, label, replaced in _BOM_CODECS:
+        # 不是这个 BOM 就试下一个
+        if not raw.startswith(bom):
+            continue
+        try:
+            # 按 BOM 声明的编码解码
+            return raw.decode(codec), label
+        except UnicodeDecodeError:
+            # BOM 说了谎（文件后半段坏了）：用替换字符兜住，至少能读进来
+            return raw.decode(codec, errors="replace"), replaced
+
+    # 第二优先：让 chardet 猜
+    guess = chardet.detect(raw) or {}
+    # 候选顺序：chardet 的结果 -> utf-8 -> gb18030（中文小说最常见的两种）
+    candidates: List[Optional[str]] = [guess.get("encoding"), "utf-8", "gb18030"]
+    for candidate in candidates:
+        # chardet 有时返回 None
+        if not candidate:
+            continue
+        try:
+            return raw.decode(candidate), candidate
+        # 编码名不认识或解不了，就换下一个候选
+        except (LookupError, UnicodeDecodeError):
+            continue
+    # 最后兜底：用 utf-8 + 替换字符，保证导入流程不会因为一个坏文件整体中断
+    return raw.decode("utf-8", errors="replace"), "utf-8 (replaced)"
+
+
+def count_words(text: str) -> int:
+    """Count words: every CJK character once, Latin text by whitespace token."""
+    # 中文按"字"算，英文按"词"算，两者相加
+    return len(_CJK_RE.findall(text)) + len(_LATIN_WORD_RE.findall(text))
+
+
+# 章节标题的识别规则：第一章 / 卷三 / Chapter 12，以及序章、楔子、番外这类固定词
+#: Chapter headings: ``第一章`` / ``卷三`` / ``Chapter 12`` plus the usual specials.
+CHAPTER_PATTERN = re.compile(
+    r"^(?:"
+    r"第\s*[0-9０-９一二三四五六七八九十百千万零两〇]+\s*[章回节卷集部篇]"
+    r"|卷\s*[0-9０-９一二三四五六七八九十百千万零两〇]*"
+    r"|序章|序言|序|楔子|引子|前言|后记|尾声|终章|番外|大结局"
+    r"|(?:chapter|volume|part|book|prologue|epilogue|appendix)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_chapter_heading(line: str) -> bool:
+    """Return ``True`` when *line* looks like a chapter heading."""
+    # 去掉首尾空白
+    stripped = line.strip()
+    # 空行太长的一定不是标题（标题一般很短）
+    if not stripped or len(stripped) > _MAX_CHAPTER_TITLE_LENGTH:
+        return False
+    # 带句号的说明是正文（正文常有"第一章里……"这种句子）
+    if "。" in stripped:  # prose often starts with 第一章, a heading never has 。
+        return False
+    # 用上面的正则匹配行首
+    return bool(CHAPTER_PATTERN.match(stripped))
+
+
+def parse_chapters(lines: Sequence[str]) -> List[Dict[str, Any]]:
+    """Return ``[{"title": ..., "line_start": ...}, ...]`` in reading order."""
+    # 逐行扫，是标题就记下"标题文本 + 行号"，行号是 chapters 跳转的依据
+    return [
+        {"title": line.strip(), "line_start": index}
+        for index, line in enumerate(lines)
+        if is_chapter_heading(line)
+    ]
+
+
+# 文件名里的分隔符：半角连字符、各种 Unicode 破折号、全角减号
+_FILENAME_SEPARATOR = re.compile(r"\s*[-\u2010-\u2015\uff0d]\s*")
+# [作者] 书名 这种写法
+_BRACKETED_AUTHOR = re.compile(r"^\[(?P<author>[^\]]+)\]\s*(?P<title>.+)$")
+# 文件名里不允许出现的字符（含控制字符），后面替换成下划线
+
+_ILLEGAL_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+# 下载站常挂在真标题后面的尾注，如 （校对版全本）/(annotated)
+# 只删"结尾处"的括号组，所以正文本来带括号的书名不会被误伤
+#: Trailing ``（校对版全本）`` / ``(annotated)`` style groups that download sites
+#: append after the real title.  Only *trailing* groups are dropped, so a title
+#: that legitimately carries brackets stays intact.
+_TRAILING_ANNOTATION = re.compile(r"\s*[（(][^（）()]*[）)]\s*$")
+
+# 文件名结尾的 "作者：某人"，冒号可能是全角或半角
+#: ``作者：某人`` at the end of a file name; the colon may be full width or ASCII.
+_AUTHOR_MARKER = re.compile(r"[\s_\-|]*作者\s*[:：]\s*(?P<author>.+?)\s*$")
+
+
+def strip_annotations(name: str) -> str:
+    """Drop trailing ``（校对版全本）`` style annotations from *name*.
+
+    ``《三体》（修订版）`` becomes ``《三体》`` and ``书名(a)(b)`` becomes ``书名``.
+    A group that is not at the end of the text is left alone, so ``书名（中）下册``
+    keeps its brackets.
+    """
+    # 先去掉首尾空白
+    cleaned = str(name or "").strip()
+    # 循环删除：像 书名(a)(b) 需要删两次才能删干净
+    while True:
+        trimmed = _TRAILING_ANNOTATION.sub("", cleaned).strip()
+        # 这一轮没变化，说明已经没有尾注了
+        if trimmed == cleaned:
+            return cleaned
+        cleaned = trimmed
+
+
+def split_author_marker(name: str) -> Tuple[str, str]:
+    """Split ``《书名》（校对版全本）作者：某人`` into the rest and ``某人``.
+
+    Returns ``(name, "")`` when the file name carries no ``作者：`` marker.  An
+    annotation trailing the author name itself is dropped as well, so
+    ``作者：某人（校对版）`` yields an author of ``某人``.
+    """
+    text = str(name or "")
+    # 找结尾的 "作者：xxx"
+    match = _AUTHOR_MARKER.search(text)
+    # 没有这个标记：原样返回，作者留空
+    if match is None:
+        return text, ""
+    # 作者名去掉尾注和书名号
+    author = strip_annotations(match.group("author")).strip("《》").strip()
+    # 标记之前的部分就是书名，顺手去掉结尾的分隔符
+    rest = text[: match.start()].strip().rstrip("_|-").strip()
+    return rest, author
+
+
+def _clean_title(text: str) -> str:
+    """Drop the trailing annotations and the ``《》`` wrapper from a title."""
+    # 去尾注 + 去掉两端的书名号
+    return strip_annotations(text).strip("《》").strip()
+
+
+def _looks_like_author_title(name: str, separator: "re.Match") -> bool:
+    """Decide whether *separator* really splits a ``作者-书名`` file name.
+
+    ``Spider-Man`` has to stay one title, so the split is only trusted when the
+    separator is spaced out or the left hand side carries CJK text.
+    """
+    # 匹配到的分隔符长度大于 1，说明连同空格一起匹配了（" - "），肯定是在分隔
+    if len(separator.group(0)) > 1:  # the pattern swallowed whitespace
+        return True
+    # 否则只有分隔符左边含中文时才认为是 "作者-书名"（英文的 Spider-Man 必须保住）
+    return bool(_CJK_RE.search(name[: separator.start()]))
+
+
+def parse_filename(stem: str) -> Tuple[str, str]:
+    """Extract ``(title, author)`` from a file name.
+
+    The documented shapes are ``作者-书名`` and plain ``书名``; ``[作者] 书名`` and
+    ``《书名》（校对版全本）作者：某人`` are accepted as well because downloaded
+    collections use them constantly.  Trailing ``（…）`` / ``(...)`` annotations
+    are always dropped, so they never reach the library.
+    """
+    # 去掉首尾空白后的原始文件名（不含扩展名）
+    name = stem.strip()
+
+    # 优先试 [作者] 书名 这种最明确的写法
+    bracketed = _BRACKETED_AUTHOR.match(name)
+    if bracketed:
+        title = _clean_title(bracketed.group("title"))
+        author = strip_annotations(bracketed.group("author")).strip()
+        # 两边都非空才采信这个解析结果
+        if title and author:
+            return title, author
+
+    # 再试结尾带 "作者：xxx" 的写法
+    remaining, marked_author = split_author_marker(name)
+    if marked_author and remaining:
+        title = _clean_title(remaining)
+        if title:
+            return title, marked_author
+        # The name was nothing but an annotation: a raw title beats an empty one.
+        # 剩下部分只是个括号注释：标题宁可保留原文，也不要空
+        return remaining.strip("《》").strip(), marked_author
+
+    # 再试 "作者-书名"（用连字符分隔）
+    separator = _FILENAME_SEPARATOR.search(name)
+    if separator is not None and _looks_like_author_title(name, separator):
+        author = strip_annotations(name[: separator.start()]).strip()
+        title = _clean_title(name[separator.end() :])
+        if author and title:
+            return title, author
+
+    # 都不匹配：整个文件名当书名，作者标记为 unknown
+    plain = _clean_title(name)
+    return plain or name, "unknown"
+
+
+def safe_filename(title: str) -> str:
+    """Turn *title* into something usable as a file name."""
+    # 非法字符换成下划线，并去掉收尾的空格和点（点结尾在 Windows 上会被吞）
+    cleaned = _ILLEGAL_FILENAME.sub("_", title).strip().strip(".")
+    # 全被清空了就兜个名字
+    return cleaned or "untitled"
+
+
+def unique_path(directory: Path, base: str, suffix: str) -> Path:
+    """Return a free path inside *directory* for ``base + suffix``."""
+    # 先直接试 base+suffix
+    candidate = directory / (base + suffix)
+    # 重名就从 2 开始编号，如 书名_utf8(2).txt
+    counter = 2
+    while candidate.exists():
+        candidate = directory / "{}({}){}".format(base, counter, suffix)
+        counter += 1
+    return candidate
+
+
+def collect_candidates(path: str) -> List[Path]:
+    """Return the ``.txt`` / ``.epub`` / ``.mobi`` / ``.azw3`` / ``.pdf`` files at *path*.
+
+    *path* may be a single book file or a directory that is searched
+    recursively.  Hidden files (macOS ``._book.txt`` forks, ``.DS_Store``) are
+    skipped.
+    """
+    # 展开 ~ 得到真实路径
+    target = Path(path).expanduser()
+    # 路径不存在：直接报错，比静默导入 0 本更好排错
+    if not target.exists():
+        raise LibraryError("path does not exist: {}".format(target))
+    # 情况一：给的是单个文件
+    if target.is_file():
+        # 后缀必须在支持列表里
+        if target.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            raise LibraryError(
+                "unsupported file type: {} (expected one of {})".format(
+                    target.name, ", ".join(SUPPORTED_EXTENSIONS)
+                )
+            )
+        return [target]
+    # 既不是文件也不是目录（比如设备文件）也不支持
+    if not target.is_dir():
+        raise LibraryError("not a file or directory: {}".format(target))
+    # 情况二：给的是目录，递归找出所有支持的书籍文件
+    candidates = [
+        item
+        for item in target.rglob("*")
+        if item.is_file()
+        # 后缀匹配（大小写不敏感）
+        and item.suffix.lower() in SUPPORTED_EXTENSIONS
+        # 跳过隐藏文件：macOS 的 ._xxx 影子文件和 .DS_Store
+        and not item.name.startswith(".")
+    ]
+    # 按路径小写排序，保证每次导入的顺序一致
+    return sorted(candidates, key=lambda item: str(item).lower())
+
+
+def _run_external_tool(
+    source: Path, destination: Path, tools: Sequence[str]
+) -> Optional[str]:
+    """Run the external converters in order; return the tool that produced text."""
+    # 按传入的顺序逐个尝试
+    for tool in tools:
+        # which 返回可执行文件的绝对路径，没装就是 None
+        executable = shutil.which(tool)
+        if not executable:
+            continue
+        try:
+            # 跑 <工具> <源文件> <目标文件>，最多等 15 分钟
+            completed = subprocess.run(
+                [executable, str(source), str(destination)],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=900,
+            )
+        except (OSError, subprocess.SubprocessError):
+            # 工具跑不起来（权限、超时等）：换下一个
+            continue
+        # 最理想：工具自己把文件写出来了
+        if destination.exists() and destination.stat().st_size > 0:
+            return tool
+        # epub2txt prints to stdout in some builds instead of writing a file.
+        # 某些版本的 epub2txt 把结果打到 stdout：那就自己写文件
+        if completed.returncode == 0 and completed.stdout:
+            text = completed.stdout.decode("utf-8", errors="replace")
+            if text.strip():
+                destination.write_text(text, encoding="utf-8")
+                return tool
+    # 所有外部工具都没成功
+    return None
+
+
+def _run_external_epub_tool(source: Path, destination: Path) -> Optional[str]:
+    """Try the epub converters (``ebook-convert`` / ``epub2txt``)."""
+    # 单独留一层：测试里 monkeypatch 的就是这个名字
+    return _run_external_tool(source, destination, EPUB_TOOLS)
+
+
+def _run_external_mobi_tool(source: Path, destination: Path) -> Optional[str]:
+    """Try the MOBI/AZW3 converters (``ebook-convert``)."""
+    # 与 epub 同样的做法，只是工具清单不同
+    return _run_external_tool(source, destination, MOBI_TOOLS)
+
+
+def _run_external_pdf_tool(source: Path, destination: Path) -> Optional[str]:
+    """Try the PDF converters (``pdftotext``)."""
+    # 与 epub / mobi 同一套：装了就用它，没装就走内置提取器
+    return _run_external_tool(source, destination, PDF_TOOLS)
+
+
+def _local_name(tag: str) -> str:
+    """Strip the ``{namespace}`` prefix from an XML tag."""
+    # ElementTree 把带命名空间的标签写成 "{ns}tag"，这里只要后面的 tag 并转小写
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+def _epub_package_path(archive: zipfile.ZipFile) -> Optional[str]:
+    """Return the zip path of the OPF package document inside *archive*.
+
+    The reading order (and therefore the TOC) lives in the OPF, whose location is
+    announced by ``META-INF/container.xml``.  ``None`` means the caller should
+    fall back to a plain file-name sort, exactly like before.
+    """
+    # zip 里所有文件的路径
+    names = set(archive.namelist())
+    # 阅读顺序写在 META-INF/container.xml 指向的 opf 里
+    container = "META-INF/container.xml"
+    if container not in names:
+        return None
+    try:
+        root = ElementTree.fromstring(archive.read(container))
+    except (ElementTree.ParseError, KeyError):
+        # container.xml 坏了：交给调用方走兜底顺序
+        return None
+    # 遍历 XML 节点，找 <rootfile full-path="...">
+    for node in root.iter():
+        if _local_name(node.tag) == "rootfile" and node.get("full-path"):
+            candidate = node.get("full-path")
+            # 只认真实存在的 opf
+            return candidate if candidate in names else None
+    return None
+
+
+def _epub_content_files(archive: zipfile.ZipFile) -> List[str]:
+    """Return the content documents of *archive*, in spine order when possible."""
+    # zip 里所有文件的路径
+    names = set(archive.namelist())
+    # 兜底方案：把所有 html/xhtml 按文件名排序
+    documents = sorted(
+        name for name in names if name.lower().endswith((".xhtml", ".html", ".htm"))
+    )
+
+    # 尝试按 epub 规范找到"阅读顺序"：opf 的位置由 container.xml 指向
+    package_path = _epub_package_path(archive)
+    # 没有 opf（或它不在包里）：直接用兜底顺序
+    if not package_path:
+        return documents
+
+    try:
+        # 解析 opf 文件
+        package = ElementTree.fromstring(archive.read(package_path))
+    except ElementTree.ParseError:
+        return documents
+
+    # manifest：id -> href，描述"这个 id 对应哪个文件"
+    manifest: Dict[str, str] = {}
+    for node in package.iter():
+        item_id = node.get("id")
+        href = node.get("href")
+        if _local_name(node.tag) == "item" and item_id and href:
+            manifest[item_id] = href
+
+    # opf 所在目录，spine 里的 href 是相对它的
+    base = posixpath.dirname(package_path)
+    # spine 里的 <itemref idref="..."> 决定真正的阅读顺序
+    order = []
+    for node in package.iter():
+        if _local_name(node.tag) != "itemref":
+            continue
+        # 通过 idref 反查 href
+        itemref = node.get("idref")
+        href = manifest.get(itemref) if itemref else None
+        if not href:
+            continue
+        # 把相对路径规范化成 zip 内的绝对路径
+        resolved = posixpath.normpath(posixpath.join(base, href)) if base else href
+        # 只收真实存在的文件
+        if resolved in names:
+            order.append(resolved)
+    # spine 解析失败（空列表）时退回文件名排序
+    return order or documents
+
+
+# <script>/<style> 整段连同内容一起删掉（不删的话 JS/CSS 会混进正文）
+_SCRIPT_STYLE = re.compile(r"(?is)<(script|style)\b.*?</\1>")
+# <br> 变体统一换成换行
+_LINE_BREAK_TAG = re.compile(r"(?i)<br\s*/?>")
+# 这些块级标签的结束标签也要换成换行，保证段落感
+_BLOCK_END = re.compile(
+    r"(?i)</(?:p|div|h[1-6]|li|tr|section|article|blockquote|title)\s*>"
+)
+# 剩下的标签一律删掉
+_ANY_TAG = re.compile(r"<[^>]*>")
+
+
+def html_to_text(markup: str) -> str:
+    """Strip *markup* down to plain text, one block per line."""
+    # 第一步：去掉脚本和样式
+    text = _SCRIPT_STYLE.sub("", markup)
+    # 第二步：<br> 换成换行
+    text = _LINE_BREAK_TAG.sub("\n", text)
+    # 第三步：块级标签结束也换成换行
+    text = _BLOCK_END.sub("\n", text)
+    # 第四步：删掉其余标签
+    text = _ANY_TAG.sub("", text)
+    # 第五步：把 &amp;、&nbsp; 之类的实体还原成字符
+    text = html.unescape(text)
+    # 最后逐行去空白、丢掉空行，用换行重新拼起来
+    return "\n".join(line.strip() for line in text.splitlines() if line.strip())
+
+
+def epub_spine_texts(archive: zipfile.ZipFile) -> List[Tuple[str, str]]:
+    """Return ``[(zip name, plain text), ...]`` of *archive*, in spine order.
+
+    Kept separate from :func:`extract_epub_builtin` so the table of contents can
+    rebuild the very same layout (each document's first line) without duplicating
+    the decoding rules.
+    """
+    # 结果：每个内容文档的文件名 + 它提取出的纯文本
+    documents: List[Tuple[str, str]] = []
+    for name in _epub_content_files(archive):
+        try:
+            # 按 epub 规范正文是 UTF-8；解不了就用替换字符兜住
+            markup = archive.read(name).decode("utf-8", errors="replace")
+        except KeyError:
+            # 上面列出的文件实际读不到（少见）：跳过
+            continue
+        text = html_to_text(markup)
+        # 非空才保留
+        if text:
+            documents.append((name, text))
+    return documents
+
+
+def extract_epub_builtin(source: Path) -> str:
+    """Extract the text of *source* using only the standard library."""
+    try:
+        # epub 就是 zip，直接打开
+        archive = zipfile.ZipFile(str(source))
+    except (OSError, zipfile.BadZipFile) as exc:
+        # 不是合法 zip：报错并说明原因
+        raise LibraryError(
+            "{} is not a readable epub: {}".format(source.name, exc)
+        ) from exc
+    # with 保证 zip 句柄被关闭
+    with archive:
+        # 各内容文档之间用换行连接，行号就是在这个拼接结果上数的
+        return "\n".join(text for _, text in epub_spine_texts(archive))
+
+
+def extract_epub(source: Path, destination: Path) -> str:
+    """Write the body of *source* into *destination*; return the method used.
+
+    ``ebook-convert`` and ``epub2txt`` win when they are installed because they
+    honour the book's own structure; otherwise a small built-in extractor reads
+    the epub as what it is, a zip of XHTML documents.
+    """
+    # 目标目录先建好
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # 先试外部工具（效果通常更好）
+    tool = _run_external_epub_tool(source, destination)
+    if tool:
+        # 返回用的是哪个工具，会记进书的 encoding 字段
+        return tool
+    # 外部工具都不在：用内置提取器
+    destination.write_text(extract_epub_builtin(source), encoding="utf-8")
+    return "builtin"
+
+
+def _cover_media_type(href: str, declared: Optional[str]) -> str:
+    """Return the image type of *href*: what the OPF declares, else its suffix.
+
+    Plenty of hand-made epubs leave ``media-type`` empty (or wrong), and the type
+    has to be settled *before* a cover is picked: the "an image called cover"
+    rule needs it to tell an image from a stylesheet.
+    """
+    media_type = (declared or "").lower()
+    # 没写（或写错）就按文件名后缀猜
+    if not media_type.startswith("image/"):
+        media_type = mimetypes.guess_type(href)[0] or ""
+    return media_type
+
+
+def _epub_cover_href(archive: zipfile.ZipFile) -> Optional[Tuple[str, str]]:
+    """Return ``(zip path, media type)`` of the epub's cover image, or ``None``.
+
+    A cover can be declared three ways, and the order they are tried in here is
+    the order the formats themselves prefer:
+
+    1. **EPUB 3** -- a manifest item with ``properties="cover-image"``;
+    2. **EPUB 2** -- ``<meta name="cover" content="<manifest id>"/>``;
+    3. **habit** -- an image item whose id or href contains ``cover``.
+
+    Anything unreadable (no OPF, broken XML, a dangling href, an exotic image
+    type) answers ``None``: a book without a usable cover is normal, not an error.
+    """
+    # 先定位 opf：路径写在 META-INF/container.xml 里
+    package_path = _epub_package_path(archive)
+    if not package_path:
+        return None
+    try:
+        # 解析 opf：manifest 与 metadata 都在里面
+        package = ElementTree.fromstring(archive.read(package_path))
+    except (ElementTree.ParseError, KeyError):
+        return None
+
+    # manifest：id -> (href, media-type, properties)
+    manifest: Dict[str, Tuple[str, str, str]] = {}
+    # <meta name="cover" content="...">：EPUB 2 用它指封面
+    meta_cover: Optional[str] = None
+    for node in package.iter():
+        tag = _local_name(node.tag)
+        if tag == "item":
+            item_id = node.get("id")
+            href = node.get("href")
+            # 没有 id 或 href 的 item 当不了封面
+            if item_id and href:
+                manifest[item_id] = (
+                    href,
+                    _cover_media_type(href, node.get("media-type")),
+                    (node.get("properties") or "").lower(),
+                )
+        elif tag == "meta" and (node.get("name") or "").lower() == "cover":
+            # content 里通常写 manifest 的 id，也有人直接写文件名
+            meta_cover = node.get("content") or None
+
+    # 判据 1：EPUB 3 的 properties="cover-image"
+    chosen: Optional[str] = None
+    for item_id, (_href, _media_type, properties) in manifest.items():
+        if "cover-image" in properties.split():
+            chosen = item_id
+            break
+    # 判据 2：EPUB 2 的 <meta name="cover">
+    if chosen is None and meta_cover:
+        for item_id, (href, _media_type, _properties) in manifest.items():
+            if item_id == meta_cover or href == meta_cover:
+                chosen = item_id
+                break
+    # 判据 3：id 或文件名里带 cover 的图片
+    if chosen is None:
+        for item_id, (href, media_type, _properties) in manifest.items():
+            if media_type.startswith("image/") and "cover" in (item_id + href).lower():
+                chosen = item_id
+                break
+    # 三条都没命中：这本没有封面
+    if chosen is None:
+        return None
+
+    # 命中项的 href 与媒体类型（类型在建表时就已经补齐）
+    href, media_type, _properties = manifest[chosen]
+    # 不在名单里的图（svg、tiff……）不认
+    if media_type not in _COVER_EXTENSIONS:
+        return None
+    # href 是相对 opf 所在目录的
+    base = posixpath.dirname(package_path)
+    resolved = posixpath.normpath(posixpath.join(base, href)) if base else href
+    # opf 里写了、压缩包里却没有：当作没有封面
+    if resolved not in set(archive.namelist()):
+        return None
+    return resolved, media_type
+
+
+def extract_epub_cover(source: Path, converted: Path) -> Optional[Path]:
+    """Best-effort: write *source*'s own cover next to the converted text.
+
+    The image lands at ``<converted stem>.<ext>`` -- ``novels/三体_utf8.txt``
+    gets ``novels/三体_utf8.jpg``.  That is exactly where the desktop shell looks
+    for a book's cover (``find_cover`` in ``src-tauri/src/lib.rs``), so the GUI
+    can show the epub's real cover without knowing anything about epub.
+
+    ``None`` means "no usable cover"; every failure is swallowed on purpose,
+    because a missing cover must never turn into a failed import.
+    """
+    try:
+        # epub 就是 zip，封面是里面一个条目
+        with zipfile.ZipFile(str(source)) as archive:
+            found = _epub_cover_href(archive)
+            if found is None:
+                return None
+            href, media_type = found
+            # 体积超过上限就不落盘（别把一张巨图搬进 novels）
+            if archive.getinfo(href).file_size > MAX_COVER_BYTES:
+                return None
+            payload = archive.read(href)
+    except (OSError, zipfile.BadZipFile, KeyError, RuntimeError):
+        # 坏 zip、坏条目、加密条目：一律当作"这本书没有封面"
+        return None
+    # 落点：正文同名，只换扩展名
+    target = converted.with_suffix(_COVER_EXTENSIONS[media_type])
+    # 已经有一张（上次导入留下的）：不覆盖，省一次写盘
+    if target.exists():
+        return target
+    try:
+        target.write_bytes(payload)
+    except OSError:
+        # 写不了就当没封面（正文已经导入成功了，别把整次导入搞失败）
+        return None
+    return target
+
+
+def extract_mobi_cover(source: Path, converted: Path) -> Optional[Path]:
+    """Best-effort: write a MOBI/AZW3 book's own cover next to its text.
+
+    Same idea and same landing spot as :func:`extract_epub_cover` -- the image
+    goes to ``<converted stem>.<ext>``, which is where the desktop shell looks
+    for it.  The bytes come from the record the book's EXTH block points at.
+    """
+    found = mobi.extract_cover(source)
+    if found is None:
+        return None
+    payload, media_type = found
+    # 落点：正文同名，只换扩展名
+    target = converted.with_suffix(_COVER_EXTENSIONS[media_type])
+    # 已经有一张（上次导入留下的）：不覆盖，省一次写盘
+    if target.exists():
+        return target
+    try:
+        target.write_bytes(payload)
+    except OSError:
+        return None
+    return target
+
+
+def extract_pdf_cover(source: Path, converted: Path) -> Optional[Path]:
+    """Best-effort: write a PDF's own cover image next to its text.
+
+    Same idea and same landing spot as :func:`extract_epub_cover` -- the image
+    goes to ``<converted stem>.<ext>``, which is where the desktop shell looks
+    for it.  The bytes come from the first page's biggest image (JPEG as it is,
+    anything else re-encoded to PNG).
+    """
+    found = pdf.extract_cover(source)
+    if found is None:
+        return None
+    payload, media_type = found
+    # 落点：正文同名，只换扩展名
+    target = converted.with_suffix(_COVER_EXTENSIONS[media_type])
+    # 已经有一张（上次导入留下的）：不覆盖，省一次写盘
+    if target.exists():
+        return target
+    try:
+        target.write_bytes(payload)
+    except OSError:
+        # 写不了就当没封面（正文已经导入成功了，别把整次导入搞失败）
+        return None
+    return target
+
+
+def _save_cover(source: Path, converted: Path) -> Optional[Path]:
+    """Write whichever kind of electronic book's cover *source* carries."""
+    # epub 从 zip 里挑，mobi/azw3 从资源记录里挑，pdf 挑第一页最大的那张图
+    if source.suffix.lower() == ".epub":
+        return extract_epub_cover(source, converted)
+    if source.suffix.lower() == ".pdf":
+        return extract_pdf_cover(source, converted)
+    return extract_mobi_cover(source, converted)
+
+
+def load_source_text(path: Path) -> Tuple[str, str]:
+    """Return ``(text, source_encoding)`` for one supported book file."""
+    suffix = path.suffix.lower()
+    # mobi/azw3 有自己的解压器（见 wreader/mobi.py）
+    if suffix in (".mobi", ".azw3"):
+        return _load_mobi_text(path)
+    # pdf 要先从对象/流里把文字层抽出来（见 wreader/pdf.py）
+    if suffix == ".pdf":
+        return _load_pdf_text(path)
+    # txt 直接按编码探测读
+    if suffix != ".epub":
+        return detect_and_decode(path)
+    # epub 要先解出正文再探测编码
+    with tempfile.TemporaryDirectory() as scratch:
+        # 临时目录里放解出来的 txt，用完自动清理
+        extracted = Path(scratch) / "extracted.txt"
+        method = extract_epub(path, extracted)
+        text, encoding = detect_and_decode(extracted)
+        if method == "builtin":
+            encoding = "UTF-8"  # XHTML inside an epub is UTF-8 by specification
+        return text, encoding
+
+
+def _load_mobi_text(path: Path) -> Tuple[str, str]:
+    """Return ``(text, encoding)`` for a ``.mobi`` / ``.azw3`` file.
+
+    ``ebook-convert`` wins when it is installed; otherwise :mod:`wreader.mobi`
+    reads the Palm database directly (PalmDOC or HUFF/CDIC, plus KF8 reassembly
+    for AZW3).
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        # 临时目录里放转出来的 txt，用完自动清理（和 epub 那条路一样）
+        extracted = Path(scratch) / "extracted.txt"
+        tool = _run_external_mobi_tool(path, extracted)
+        if tool:
+            # 外部工具吐出来的是普通 txt：照样探测编码
+            return detect_and_decode(extracted)
+    # 内置提取器吐出的是 HTML 味儿的标记，交给 html_to_text 变纯文本
+    markup, codec = mobi.extract_markup(path)
+    return html_to_text(markup), codec.upper()
+
+
+def _load_pdf_text(path: Path) -> Tuple[str, str]:
+    """Return ``(text, encoding)`` for a ``.pdf`` file.
+
+    ``pdftotext`` wins when it is installed; otherwise :mod:`wreader.pdf` reads
+    the file's objects itself and replays each page's text operators.  Either
+    way what comes back is already Unicode, so the encoding is reported as
+    UTF-8 -- the same label the built-in epub path uses.
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        # 临时目录里放转出来的 txt，用完自动清理（和 epub / mobi 两条路一样）
+        extracted = Path(scratch) / "extracted.txt"
+        tool = _run_external_pdf_tool(path, extracted)
+        if tool:
+            # 外部工具吐出来的是普通 txt：照样探测编码
+            return detect_and_decode(extracted)
+    try:
+        # 内置提取器：整本的文字层，逐页拼好直接就是纯文本
+        return pdf.extract_text(path), "UTF-8"
+    except pdf.PdfError as exc:
+        # 转成书库自己的异常，这样单个坏 PDF 只记一条失败，不中断整次导入
+        raise LibraryError("cannot read {}: {}".format(path.name, exc)) from exc
+
+
+# 一次导入的结果汇总
+@dataclass
+class ImportResult:
+    """Outcome of :func:`import_books`."""
+
+    # 成功导入的 (book_id, 记录)
+    imported: List[Tuple[str, Dict[str, Any]]] = field(default_factory=list)
+    # 因为内容重复而跳过的文件
+    duplicates: List[Path] = field(default_factory=list)
+    # 失败的文件及原因
+    failed: List[Tuple[Path, str]] = field(default_factory=list)
+
+    @property
+    def scanned(self) -> int:
+        """Number of candidate files that were looked at."""
+        # 扫描到的候选文件总数 = 成功 + 重复 + 失败
+        return len(self.imported) + len(self.duplicates) + len(self.failed)
+
+
+def write_utf8_text(text: str, title: str, directory: Path) -> Path:
+    """Write *text* as UTF-8 to ``<directory>/<title>_utf8.txt``.
+
+    The name is made file system safe and de-duplicated with a ``(2)`` suffix, so
+    two different books sharing a title never overwrite each other.
+    """
+    # 目标目录（默认 ~/novels）不存在就建
+    directory.mkdir(parents=True, exist_ok=True)
+    # 文件名 = 安全的标题 + "_utf8"，重名会自动加 (2)/(3)
+    destination = unique_path(directory, safe_filename(title) + "_utf8", ".txt")
+    # 写入正文，末尾补一个换行
+    destination.write_text(text + "\n", encoding="utf-8")
+    return destination
+
+
+def write_pdf_file(source: Path, title: str, directory: Path) -> Path:
+    """Copy *source* into *directory* as ``<title>_utf8.pdf``.
+
+    The PDF itself is what image mode reads, so it is **kept** (the original may
+    be moved or deleted right after the import, exactly like an epub's converted
+    text is kept).  The same ``(2)`` de-duplication as :func:`write_utf8_text`
+    applies: two books sharing a title never overwrite each other.
+    """
+    # 目标目录（默认 ~/novels）不存在就建
+    directory.mkdir(parents=True, exist_ok=True)
+    # 文件名与转成文字后的 `<title>_utf8.txt` 同根名，只差扩展名
+    destination = unique_path(directory, safe_filename(title) + "_utf8", ".pdf")
+    # 整份拷过来：图片模式与「转换成文字」都读这一份
+    shutil.copyfile(source, destination)
+    return destination
+
+
+def build_record(
+    # 书名
+    title: str,
+    # 作者
+    author: str,
+    # 转成 UTF-8 后的正文路径
+    file_path: Path,
+    # 原文件的编码（或 epub 用的提取方式）
+    encoding: str,
+    # 正文全文
+    text: str,
+) -> Dict[str, Any]:
+    """Assemble the index record for one imported book."""
+    # 按换行切行：行号是阅读进度和章节跳转的基本单位
+    lines = text.split("\n")
+    # 组装索引记录，顺序与文件里的字段顺序一致
+    return {
+        "title": title,
+        "author": author,
+        "file_path": str(file_path),
+        "encoding": encoding,
+        "total_lines": len(lines),
+        "total_words": count_words(text),
+        "chapters": parse_chapters(lines),
+        "progress": empty_progress(),
+        "tags": [],
+        "import_date": _today(),
+    }
+
+
+# 图片模式 PDF 记录的 encoding 值：桌面界面把它当成「这本还没转成文字」的标记之一
+PDF_IMAGE_ENCODING = "PDF (images)"
+
+
+def build_pdf_record(
+    # 书名
+    title: str,
+    # 作者
+    author: str,
+    # 存下来的 PDF 路径（图片模式的正文来源）
+    file_path: Path,
+    # 页数
+    pages: int,
+) -> Dict[str, Any]:
+    """Assemble the index record of a PDF imported in **image mode**.
+
+    ``total_lines`` is the **page count** on purpose.  Line numbers stay the one
+    coordinate system every front end speaks (position, percentage, bookmarks,
+    "finished"), and for a page-per-picture book one line *is* one page -- so the
+    shelf progress, the statistics and the terminal's position maths keep working
+    unchanged.  ``text_path`` stays empty until :func:`convert_pdf` runs.
+    """
+    # 组装索引记录；顺序与 build_record 一致，只是正文相关的字段先空着
+    return {
+        "title": title,
+        "author": author,
+        # 图片模式读的就是这份 PDF
+        "file_path": str(file_path),
+        # 转换成文字之后才写下 `<title>_utf8.txt`
+        "text_path": "",
+        # 前端据此决定「默认按图片浏览」
+        "format": "pdf",
+        # 页数（图片模式的总量）
+        "pages": int(pages),
+        "encoding": PDF_IMAGE_ENCODING,
+        # 行号 == 页码：进度百分比照旧
+        "total_lines": int(pages),
+        # 没有文字，就没有字数与章节（转换成文字之后才补上）
+        "total_words": 0,
+        "chapters": [],
+        "progress": empty_progress(),
+        "tags": [],
+        "import_date": _today(),
+    }
+
+
+def book_text_path(book: Dict[str, Any]) -> str:
+    """Return the path of a book's **text**, whichever kind of book it is.
+
+    Every text consumer (the terminal reader, the ``text`` / ``session`` / ``toc``
+    RPCs, the toc cache) goes through this one function:
+
+    * txt / epub / mobi keep their text in ``file_path`` -- unchanged;
+    * a PDF is imported in **image mode**, so its text only exists after
+      :func:`convert_pdf` ran and lands in ``text_path``;
+    * a PDF that has not been converted yet raises, with a message that says what
+      to do about it (the desktop shell offers a 「转换成文字」 button).
+    """
+    # pdf：正文要等「转换成文字」之后才有
+    if str(book.get("format") or "") == "pdf":
+        text_path = str(book.get("text_path") or "")
+        # 记着路径、文件也还在：就是它
+        if text_path and Path(text_path).is_file():
+            return text_path
+        raise LibraryError(
+            "this PDF has not been converted to text yet -- use 「转换成文字」 in the "
+            "desktop app (or re-import a converted copy)"
+        )
+    # 其余格式：正文一直就在 file_path
+    return str(book.get("file_path") or "")
+
+
+def _import_pdf_image(source: Path, books: Dict[str, Any], result: ImportResult) -> None:
+    """Import one PDF in **image mode**.
+
+    A PDF is a page-description format, not a text one: it is browsed as pictures
+    by default, so the import only takes the file in, counts its pages and grabs
+    the cover.  The text layer is extracted later, on demand, by
+    :func:`convert_pdf` -- which is also why even a **scanned** PDF (no text layer
+    at all) imports fine and can be read as images.
+    """
+    # 书名 / 作者照旧从文件名解析（与其它格式同一套规矩）
+    title, author = parse_filename(source.stem)
+    try:
+        # 书 id = 文件本身的 SHA-1：图片模式没有正文可算
+        digest = hashlib.sha1(source.read_bytes()).hexdigest()[:_ID_LENGTH]
+    except OSError as exc:
+        # 读不了原文件：记一条失败继续
+        result.failed.append((source, str(exc)))
+        return
+    # 已经在库里：记成重复，顺带补一张缺的封面（与 epub / mobi 同一条规矩）
+    if digest in books:
+        result.duplicates.append(source)
+        _backfill_cover(books[digest], source)
+        return
+    try:
+        # 页数：走一遍页树就好，不重放内容流、不解析字体
+        pages = pdf.page_count(source)
+    except pdf.PdfError as exc:
+        # 不是 PDF / 结构坏到读不出页树：报清楚
+        result.failed.append((source, "cannot read {}: {}".format(source.name, exc)))
+        return
+    try:
+        # 把 PDF 本身收进 novels 目录（之后删掉原件也不影响阅读）
+        stored = write_pdf_file(source, title, config.novels_dir())
+    except OSError as exc:
+        # 磁盘写不了（满/权限）：记失败继续下一个
+        result.failed.append((source, str(exc)))
+        return
+    # 记录 + 内嵌封面（第一页最大的那张图，落到 PDF 旁边）
+    books[digest] = build_pdf_record(title, author, stored, pages)
+    result.imported.append((digest, books[digest]))
+    _save_cover(source, stored)
+
+
+def import_books(path: str) -> ImportResult:
+    """Scan *path*, convert every new book to UTF-8 and index it."""
+    # 先找出所有候选书籍文件
+    candidates = collect_candidates(path)
+    # 读出现有索引，新书会直接加进这个字典
+    document = load_library()
+    books = document["books"]
+    # 结果汇总
+    result = ImportResult()
+
+    # 逐个文件处理；单个失败不影响其它文件
+    for candidate in candidates:
+        # pdf 默认走**图片模式**：只收文件、数页数、取封面，不做文字解析
+        # （文字层等读者点了「转换成文字」再抽，见 convert_pdf）
+        if candidate.suffix.lower() == ".pdf":
+            _import_pdf_image(candidate, books, result)
+            continue
+        try:
+            # 读出正文和原编码（epub 会先解压）
+            text, encoding = load_source_text(candidate)
+        except (LibraryError, OSError, UnicodeError) as exc:
+            # ``UnicodeError`` is not a ``LibraryError``: without it a single
+            # undecodable file would abort the whole run instead of being
+            # reported as failed (see ``detect_and_decode`` for the decoding).
+            result.failed.append((candidate, str(exc)))
+            continue
+        # 换行统一成 \n
+        text = normalise_newlines(text)
+        # 全文只有空白（比如空文件）：算失败
+        if not text.strip():
+            result.failed.append((candidate, "no text content"))
+            continue
+
+        # 用正文的 SHA-1 当 id：内容一样就是同一本书
+        book_id = hashlib.sha1(text.encode("utf-8")).hexdigest()[:_ID_LENGTH]
+        # 已经在库里：记成重复，不重复导入
+        if book_id in books:
+            result.duplicates.append(candidate)
+            # 这本还缺封面（比如这一版之前导入的）：趁原文件还在，补一张
+            if candidate.suffix.lower() in EBOOK_EXTENSIONS:
+                _backfill_cover(books[book_id], candidate)
+            continue
+
+        # 从文件名解析书名和作者
+        title, author = parse_filename(candidate.stem)
+        try:
+            # 把正文以 UTF-8 写进 novels 目录
+            destination = write_utf8_text(text, title, config.novels_dir())
+        except OSError as exc:
+            # 磁盘写不了（满/权限）：记失败继续下一个
+            result.failed.append((candidate, str(exc)))
+            continue
+
+        # 组装索引记录
+        record = build_record(title, author, destination, encoding, text)
+        books[book_id] = record
+        result.imported.append((book_id, record))
+        # 电子书的 nav/toc 与内嵌封面，只在这个时刻还拿得到（索引里只留转换后的 txt）
+        suffix = candidate.suffix.lower()
+        if suffix == ".epub":
+            _cache_epub_toc(book_id, candidate, destination, text)
+        if suffix in EBOOK_EXTENSIONS:
+            _save_cover(candidate, destination)
+
+    # 只要有新书入库，就把索引写回磁盘
+    if result.imported:
+        save_library(document)
+    return result
+
+
+def convert_pdf(book_id: str) -> Dict[str, Any]:
+    """Extract a PDF's text layer and remember it -- the 「转换成文字」 action.
+
+    Reads the stored PDF, runs the very same extractor the importer would have
+    used (``pdftotext`` when it is installed, the built-in reader otherwise),
+    writes the text beside the PDF as ``<title>_utf8.txt`` and updates the record:
+    ``text_path`` / ``total_lines`` / ``total_words`` / ``chapters`` / ``encoding``
+    then describe the *text*, while ``file_path`` / ``pages`` keep describing the
+    PDF -- image mode keeps working afterwards, and calling this twice is a no-op.
+
+    Raises :class:`LibraryError` for an unknown book, a book that is not a PDF, or
+    a PDF that has no text layer (a scanned book -- OCR it first).
+    """
+    document = load_library()
+    books = document["books"]
+    book = books.get(book_id)
+    # 不认识的 id：报错，别悄悄建一条记录
+    if not isinstance(book, dict):
+        raise LibraryError("unknown book id: {}".format(book_id))
+    # 只有图片模式的 pdf 需要这一步（其它格式导入时就已经有正文了）
+    if str(book.get("format") or "") != "pdf":
+        raise LibraryError("not a PDF book: {}".format(book_id))
+    # 已经转过、正文也还在：读回来即可（幂等，重算一次统计字段）
+    recorded = str(book.get("text_path") or "")
+    text: Optional[str] = None
+    target: Optional[Path] = None
+    if recorded and Path(recorded).is_file():
+        target = Path(recorded)
+    else:
+        source = Path(str(book.get("file_path") or ""))
+        # PDF 本体不在了：没得转
+        if not source.is_file():
+            raise LibraryError("the PDF file is missing: {}".format(source))
+        # 抽文字层（外部 pdftotext 优先、内置兜底；扫描版会在这里报错）
+        text, _encoding = _load_pdf_text(source)
+        # 与导入时同样的换行规范化：行号口径才一致
+        text = normalise_newlines(text)
+        # 一页有字的都没有（扫描版）：明确报错，不落一份空正文
+        if not text.strip():
+            raise LibraryError("no text could be read from {}".format(source.name))
+        # 落在 PDF 旁边、同根名；重名照样加 (2)
+        target = unique_path(source.parent, source.stem, ".txt")
+        try:
+            target.write_text(text + "\n", encoding="utf-8")
+        except OSError as exc:
+            raise LibraryError("cannot write {}: {}".format(target, exc)) from exc
+    # 幂等那条路：从已有的 txt 把正文读回来，统计字段跟着刷新
+    if text is None:
+        try:
+            text = normalise_newlines(target.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise LibraryError("cannot read {}: {}".format(target, exc)) from exc
+    # 更新记录：正文相关的字段换成 txt 的，PDF 相关的（file_path / pages）一个字不动
+    lines = text.split("\n")
+    book["text_path"] = str(target)
+    book["total_lines"] = len(lines)
+    book["total_words"] = count_words(text)
+    book["chapters"] = parse_chapters(lines)
+    book["encoding"] = "UTF-8"
+    save_library(document)
+    return book
+
+
+def _cache_epub_toc(
+    book_id: str,
+    source: Path,
+    converted: Path,
+    text: str,
+) -> None:
+    """Best-effort: cache a nav aware table of contents for one epub.
+
+    The index keeps only the converted UTF-8 text, so this is the one moment an
+    epub's own ``nav``/``toc`` documents can still be read.  Any failure here is
+    swallowed on purpose: a missing table of contents must never break an import.
+    """
+    try:
+        # 延迟导入：toc 依赖 library，模块级互相 import 会打结
+        from . import toc
+
+        # 行号与阅读器共用一套坐标（转换后的 txt 按 \n 切）
+        lines = text.split("\n")
+        # 设置里可能有自定义章节正则
+        settings = config.load_config()
+        # 转成 epub 自带的 nav/toc 标题 + 行号
+        entries = toc.build_toc_from_epub(source, lines, toc.extra_patterns(settings))
+        # 记下转换后正文的 mtime，以后正文一变就让缓存失效
+        try:
+            mtime: Optional[float] = converted.stat().st_mtime
+        except OSError:
+            mtime = None
+        toc.save_toc(book_id, entries, mtime, source=source, settings=settings)
+    except Exception:
+        # 目录只是锦上添花：解析/写盘出任何问题都直接跳过
+        return
+
+
+def _backfill_cover(book: Dict[str, Any], source: Path) -> None:
+    """Give an already-imported book a cover when it is still missing one.
+
+    Importing is the only moment the original electronic book is around: the
+    index keeps just the converted text.  So a library imported *before* covers
+    existed can only be repaired by importing the same files again -- they come
+    back as duplicates, and that is exactly when this runs.
+    """
+    # 转换后的正文路径：记录里唯一还指着 novels 目录的线索
+    converted = Path(str(book.get("file_path") or ""))
+    # 记录里没有路径：不知道封面该落到哪
+    if not converted.name:
+        return
+    # 已经有封面（任意一种扩展名）：不用重复落盘
+    if any(converted.with_suffix(ext).exists() for ext in set(_COVER_EXTENSIONS.values())):
+        return
+    _save_cover(source, converted)
+
+
+def _is_subsequence(needle: str, haystack: str) -> bool:
+    """Return ``True`` when *needle* appears in *haystack* in order."""
+    # 把 haystack 变成迭代器：in 会顺序消耗，天然就是"子序列"判断
+    iterator = iter(haystack)
+    # 每个字符都要能在迭代器里按顺序找到，才算子序列
+    return all(character in iterator for character in needle)
+
+
+def _score_text(haystack: str, needle: str) -> int:
+    """Score how well *needle* matches *haystack*; ``0`` means no match."""
+    # 空字符串不参与匹配
+    if not haystack:
+        return 0
+    # 统一小写做大小写不敏感匹配
+    text = haystack.lower()
+    # 完全相同：最高分
+    if text == needle:
+        return 100
+    # 以关键词开头：次高
+    if text.startswith(needle):
+        return 80
+    # 关键词出现在中间：分数随位置递减（越靠前越相关）
+    position = text.find(needle)
+    if position >= 0:
+        return 60 - min(position, 30)
+    # 只能按"子序列"匹配（hptr -> Harry Potter）：给个低分
+    if _is_subsequence(needle, text):
+        return 20
+    # 完全匹配不上
+    return 0
+
+
+def _book_score(book: Dict[str, Any], needle: str, tags_only: bool) -> int:
+    """Score a whole record, weighing the title highest."""
+    tags = book.get("tags") or []
+    # 只搜标签的模式（关键词以 # 开头）
+    if tags_only:
+        # 没有任何标签时默认 0
+        return max((_score_text(str(tag), needle) for tag in tags), default=0)
+    # 标题权重乘 2，因为按标题搜是最常见的诉求
+    scores = [
+        _score_text(str(book.get("title") or ""), needle) * 2,
+        _score_text(str(book.get("author") or ""), needle),
+    ]
+    # 再把每个标签的得分也加进来
+    scores.extend(_score_text(str(tag), needle) for tag in tags)
+    # 取最高分作为这本书的得分
+    return max(scores)
+
+
+def search_books(
+    # 搜索关键词
+    keyword: str,
+    # 传入书库文档可直接搜（不传就读磁盘）
+    document: Optional[Dict[str, Any]] = None,
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """Fuzzy search by title, author or tag, best matches first.
+
+    Matching is case insensitive and falls back to a subsequence match, so
+    ``werd search hptr`` finds "Harry Potter".  A leading ``#`` restricts the
+    search to tags (``werd search '#fantasy'``).  An empty keyword returns every
+    book in title order; a keyword of just ``#`` returns nothing.
+    """
+    # 取书库里的 books 字典
+    books = (document or read_library())["books"]
+    # 先按标题排好，结果稳定
+    rows = sorted(books.items(), key=_title_key)
+    # 关键词去掉首尾空白
+    needle = (keyword or "").strip()
+    # 空关键词：按标题列出全部
+    if not needle:
+        return rows
+
+    # 以 # 开头表示"只在标签里搜"
+    tags_only = needle.startswith("#")
+    if tags_only:
+        needle = needle[1:].strip()
+    # 只输入一个 # ：什么都不返回
+    if not needle:
+        return []
+    # 统一小写
+    needle = needle.lower()
+
+    # 收集 (得分, 排序键, id, 记录)
+    scored = []
+    for book_id, book in rows:
+        score = _book_score(book, needle, tags_only)
+        # 得分 0 表示不匹配，直接丢掉
+        if score:
+            scored.append((score, _title_key((book_id, book)), book_id, book))
+    # 先按得分降序（-item[0]），同分再按标题升序
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    # 只对外返回 (id, 记录)
+    return [(book_id, book) for _, _, book_id, book in scored]

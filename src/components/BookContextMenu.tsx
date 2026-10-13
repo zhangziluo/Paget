@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { FormEvent, ReactNode } from "react";
 
 import { bookRecord } from "../lib/core";
 import { addDays } from "../lib/deadlines";
 import { duration, humanWords, shortStamp } from "../lib/format";
+import { renamedTitle, renameTouched, type ManageRename } from "../lib/shelfManage";
 import type { BookRecord, BookRow } from "../lib/types";
 
 /** 菜单里一条选项。 */
@@ -19,7 +20,7 @@ type Item = {
 };
 
 /** 内核不支持某个方法时，禁用的菜单项统一显示这句话。 */
-const UNSUPPORTED_HINT = "当前内核版本不支持这个操作（需要较新的 werd 内核）";
+const UNSUPPORTED_HINT = "当前内核版本不支持这个操作（需要较新的内核）";
 
 /**
  * 书籍卡片的右键菜单（也用于触屏长按）。
@@ -246,25 +247,132 @@ export function BookStatsDialog(props: { book: BookRow; onClose: () => void }) {
   );
 }
 
-/** 属性：书名 / 作者 / 总字数 / 添加时间 / 最后阅读时间。 */
-export function BookPropsDialog(props: { book: BookRow; onClose: () => void }) {
+/** 把「逗号分隔的一行标签」拆成内核要的列表（中英文逗号都认，空项丢掉）。 */
+function parseTags(text: string): string[] {
+  return text
+    .split(/[,，]/)
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0);
+}
+
+/**
+ * 属性：书名 / 作者 / 标签可以直接改（走内核 `set_meta`），其余只读。
+ *
+ * 只有内核认 `set_meta` 时才摆输入框；老内核降级成原来那份只读清单，并说明
+ * 为什么不能改（与右键菜单里禁用项同一套理由）。保存中 / 保存失败都留在弹窗里，
+ * 别让用户去书架页脚找报错。成功由父组件关窗（它还要重同步书架），这里只管草稿。
+ */
+export function BookPropsDialog(props: {
+  book: BookRow;
+  /** 内核认不认 `set_meta`（启动时探出来，见 `lib/core.ts` 的 coreCapabilities） */
+  canEdit: boolean;
+  /** 父组件负责落库：成功即关窗，抛错就显示在这里 */
+  onSave: (meta: { title: string; author: string; tags: string[] }) => Promise<void>;
+  onClose: () => void;
+}) {
   const { record, error } = useRecord(props.book.id);
+  // 草稿：打开时照抄当前值；标签编成一行文本，保存时再拆回列表
+  const [title, setTitle] = useState(props.book.title);
+  const [author, setAuthor] = useState(props.book.author);
+  const [tags, setTags] = useState((props.book.tags ?? []).join("，"));
+  // 保存中 + 保存失败的原文
+  const [busy, setBusy] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  // 书名是这本书在书架上的身份：空了就不给保存（内核也会拒绝空书名）
+  const canSave = props.canEdit && title.trim().length > 0 && !busy;
+  // 图片模式的 pdf（还没转换成文字）：没有字数可算，事实区显示页数
+  const isPdfImage = (props.book.format ?? "") === "pdf" && !props.book.text_path;
+
+  /** 提交：父组件落库并关窗，这里只负责忙状态与把报错留在弹窗里。 */
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canSave) return;
+    setBusy(true);
+    setSaveError("");
+    try {
+      // 交给内核的是清洗过的三个值（书名 / 作者去掉首尾空白，标签已拆成列表）
+      await props.onSave({
+        title: title.trim(),
+        author: author.trim(),
+        tags: parseTags(tags),
+      });
+    } catch (err) {
+      setSaveError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <BookDialog title={`属性 · ${props.book.title || props.book.id}`} onClose={props.onClose}>
       {error ? <p className="error">{error}</p> : null}
+      {saveError ? <p className="error">{saveError}</p> : null}
+
+      {props.canEdit ? (
+        <form className="book-edit" onSubmit={submit}>
+          <label className="book-edit-field">
+            <span>书名</span>
+            <input
+              value={title}
+              autoFocus
+              onChange={(event) => setTitle(event.currentTarget.value)}
+            />
+          </label>
+          <label className="book-edit-field">
+            <span>作者</span>
+            <input value={author} onChange={(event) => setAuthor(event.currentTarget.value)} />
+          </label>
+          <label className="book-edit-field">
+            <span>标签</span>
+            <input
+              value={tags}
+              placeholder="用逗号分隔，例如：科幻，长篇"
+              onChange={(event) => setTags(event.currentTarget.value)}
+            />
+          </label>
+          <div className="book-dialog-actions">
+            <button type="button" className="ghost" onClick={props.onClose} disabled={busy}>
+              取消
+            </button>
+            <button type="submit" disabled={!canSave}>
+              {busy ? "保存中…" : "保存"}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <p className="dim">{UNSUPPORTED_HINT}</p>
+          <dl className="book-facts">
+            <div>
+              <dt>书名</dt>
+              <dd>{props.book.title || props.book.id}</dd>
+            </div>
+            <div>
+              <dt>作者</dt>
+              <dd>{props.book.author || "未知"}</dd>
+            </div>
+            <div>
+              <dt>标签</dt>
+              <dd>{(props.book.tags ?? []).join("，") || "无"}</dd>
+            </div>
+          </dl>
+        </>
+      )}
+
+      {/* 只读的那几项：文字量、入库日期与上次阅读 */}
       <dl className="book-facts">
-        <div>
-          <dt>书名</dt>
-          <dd>{props.book.title || props.book.id}</dd>
-        </div>
-        <div>
-          <dt>作者</dt>
-          <dd>{props.book.author || "未知"}</dd>
-        </div>
-        <div>
-          <dt>总字数</dt>
-          <dd>{humanWords(props.book.total_words)}字</dd>
-        </div>
+        {/* pdf 图片模式没有字数可算：显示页数，不然这里永远是个 0 */}
+        {isPdfImage ? (
+          <div>
+            <dt>总页数</dt>
+            <dd>{props.book.pages ?? 0} 页</dd>
+          </div>
+        ) : (
+          <div>
+            <dt>总字数</dt>
+            <dd>{humanWords(props.book.total_words)}字</dd>
+          </div>
+        )}
         <div>
           <dt>添加时间</dt>
           <dd>{record?.import_date || "…"}</dd>
@@ -278,23 +386,117 @@ export function BookPropsDialog(props: { book: BookRow; onClose: () => void }) {
   );
 }
 
-/** 删除这本书之前的二次确认。 */
+/** 删除之前的一次确认（单本 / 批量共用）。 */
 export function ConfirmDeleteDialog(props: {
   message: string;
   busy: boolean;
+  /** 弹窗标题；缺省是单本那句「删除这本书」，批量删除时换成「删除选中的 N 本」 */
+  title?: string;
+  /** 标题下面的小字说明；缺省讲「删掉的只是书目与正文」 */
+  note?: string;
   onConfirm: () => void;
   onClose: () => void;
 }) {
   return (
-    <BookDialog title="删除这本书" onClose={props.onClose}>
+    <BookDialog title={props.title ?? "删除这本书"} onClose={props.onClose}>
       <p className="book-dialog-message">{props.message}</p>
-      <p className="dim">删掉的只是书目与转换后的正文；阅读时长与成就会保留。</p>
+      <p className="dim">
+        {props.note ?? "删掉的只是书目与转换后的正文；阅读时长与成就会保留。"}
+      </p>
       <div className="book-dialog-actions">
         <button type="button" className="ghost" onClick={props.onClose} disabled={props.busy}>
           取消
         </button>
         <button type="button" className="danger" onClick={props.onConfirm} disabled={props.busy}>
           {props.busy ? "删除中…" : "删除"}
+        </button>
+      </div>
+    </BookDialog>
+  );
+}
+
+/**
+ * 管理模式下「选择 → 批量改书名」的弹窗。
+ *
+ * 四条规则都是**原样文本**（不是正则，见 `lib/shelfManage.ts` 的 `ManageRename`）：
+ * 前缀 / 后缀直接拼上，查找 / 替换按字面替换。表单本身不改任何数据 ——
+ * 规则交给父组件（它才知道选了哪几本、并通过内核 `set_meta` 落库）；这里只负责
+ * 草稿与那句「拿第一本做样板」的实时预览，让用户按之前就看得见结果。
+ */
+export function BatchRenameDialog(props: {
+  /** 选中的本数 */
+  count: number;
+  /** 样板：第一本选中的书名（null = 没有可预览的；预览行不出现） */
+  sample: string | null;
+  busy: boolean;
+  onApply: (rule: ManageRename) => void;
+  onClose: () => void;
+}) {
+  const [prefix, setPrefix] = useState("");
+  const [suffix, setSuffix] = useState("");
+  const [find, setFind] = useState("");
+  const [replace, setReplace] = useState("");
+  const rule: ManageRename = { prefix, suffix, find, replace };
+  // 四条都空着就没什么可改的：按钮禁用（免得白跑一趟内核）
+  const ready = renameTouched(rule) && !props.busy;
+  const preview = props.sample !== null ? renamedTitle(props.sample, rule) : "";
+
+  return (
+    <BookDialog title={`批量改书名 · ${props.count} 本`} onClose={props.onClose}>
+      <p className="book-dialog-message">
+        给选中的 {props.count} 本书统一改书名：前缀 / 后缀直接拼上，查找 / 替换按字面替换
+        （都是原样文字，不是正则）；作者与标签不动。
+      </p>
+
+      <div className="book-edit">
+        <label className="book-edit-field">
+          <span>前缀</span>
+          <input
+            value={prefix}
+            autoFocus
+            placeholder="拼在所有书名最前面"
+            onChange={(event) => setPrefix(event.currentTarget.value)}
+          />
+        </label>
+        <label className="book-edit-field">
+          <span>后缀</span>
+          <input
+            value={suffix}
+            placeholder="拼在所有书名最后面"
+            onChange={(event) => setSuffix(event.currentTarget.value)}
+          />
+        </label>
+        <label className="book-edit-field">
+          <span>查找</span>
+          <input
+            value={find}
+            placeholder="书名里要替换掉的那一段（留空 = 不替换）"
+            onChange={(event) => setFind(event.currentTarget.value)}
+          />
+        </label>
+        <label className="book-edit-field">
+          <span>替换</span>
+          <input
+            value={replace}
+            placeholder="换成的字（留空 = 删掉这一段）"
+            onChange={(event) => setReplace(event.currentTarget.value)}
+          />
+        </label>
+      </div>
+
+      {props.sample !== null ? (
+        <p className="batch-preview">
+          示例：<span className="dim">{props.sample}</span> →{" "}
+          <strong>{preview.trim() || "（空书名，内核会拒绝）"}</strong>
+        </p>
+      ) : null}
+
+      <div className="book-dialog-actions">
+        <button type="button" className="ghost" onClick={props.onClose} disabled={props.busy}>
+          取消
+        </button>
+        <button type="button" onClick={() => props.onApply(rule)} disabled={!ready}>
+          {props.busy ? "改名中…" : `改这 ${props.count} 本`}
         </button>
       </div>
     </BookDialog>

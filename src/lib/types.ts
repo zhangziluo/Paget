@@ -1,17 +1,26 @@
 /**
  * TypeScript mirrors of what the reading core hands back.
  *
- * These are the *wire* shapes from `wreader/serve.py` (see `_book_rows` there);
+ * These are the *wire* shapes from `core/wreader/serve.py` (see `_book_rows` there);
  * they are deliberately plain data so the shelf can render them directly.
  */
 
 /** One row of the shelf, as the core's `list` / `recent` / `search` return it. */
 export type BookRow = {
-  /** 书 id（正文 SHA-1 前 12 位，与 `werd read <id>` 用的是同一个） */
+  /** 书 id（正文 SHA-1 前 12 位，与内核用的是同一个） */
   id: string;
   title: string;
   author: string;
   file_path: string;
+  /**
+   * 书的形式：`"pdf"` 表示这本是**图片模式**的 PDF（阅读页默认画页面而不是排文字）。
+   * 别的格式是空串；缓存里重建出来的行一定有它，老行没有时按 `""` 算。
+   */
+  format?: string;
+  /** 图片模式 PDF 的页数（普通书是 0） */
+  pages?: number;
+  /** 「转换成文字」之后那份 txt 的路径（没转之前是空串） */
+  text_path?: string;
   total_lines: number;
   total_words: number;
   chapter_count: number;
@@ -122,6 +131,12 @@ export type BookRecord = {
   author?: string;
   total_lines?: number;
   total_words?: number;
+  /** 图片模式的 pdf：`"pdf"`；其余格式是空串 */
+  format?: string;
+  /** 图片模式 pdf 的页数 */
+  pages?: number;
+  /** 「转换成文字」之后那份 txt 的路径（没转之前是空串） */
+  text_path?: string;
   /** 入库日期（YYYY-MM-DD，只有裸记录里有，扁平行里没有） */
   import_date?: string;
   progress?: {
@@ -170,7 +185,7 @@ export type StatsBook = {
 };
 
 /**
- * The whole reading statistics report -- the very dict `werd stats --json`
+ * The whole reading statistics report -- the very dict the core returns
  * prints (`stats.build_report`), so the GUI and the terminal cannot drift.
  */
 export type StatsReport = {
@@ -223,6 +238,18 @@ export type ConfigGet = {
 export type ConfigSet = {
   path: string;
   value: unknown;
+};
+
+/**
+ * `set_meta` 的回执：改完后的三个字段（见 `lib/core.ts` 的 `setBookMeta`）。
+ *
+ * 内核在这里只动这三项标签，正文、章节表、位置与统计一概不碰。
+ */
+export type BookMeta = {
+  book_id: string;
+  title: string;
+  author: string;
+  tags: string[];
 };
 
 /** One book named in a receipt (import / prune / clear). */

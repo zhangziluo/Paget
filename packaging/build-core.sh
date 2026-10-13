@@ -6,13 +6,13 @@
 #
 # What it does, in order:
 #
-# 1. finds the Python that can import `wreader` (the core checkout's own venv,
-#    `$WREADER_CORE_PYTHON`, or whatever `python3` is first on PATH);
-# 2. freezes `packaging/werd-core.spec` in a scratch directory, so no build
+# 1. finds the Python that can import `wreader` (the kernel's own venv in `core/`,
+#    `$PAGET_CORE_PYTHON`, or whatever `python3` is first on PATH);
+# 2. freezes `packaging/paget-core.spec` in a scratch directory, so no build
 #    leftovers ever land in the working tree;
-# 3. copies the result to `src-tauri/binaries/werd-core/`, which
+# 3. copies the result to `src-tauri/binaries/paget-core/`, which
 #    `tauri.conf.json` ships as the `core` **resource** -- the app then starts
-#    `<resource dir>/core/werd-core` (see `CoreCommand::resolve` in
+#    `<resource dir>/core/paget-core` (see `CoreCommand::resolve` in
 #    `src-tauri/src/core_client.rs`);
 # 4. runs `packaging/smoke_core.py` on the installed file (skip with --no-smoke).
 #
@@ -34,8 +34,8 @@
 # convention without rebuilding the shell per architecture.)
 #
 # NOTE: PyInstaller is not a dependency of the core project (the core stays a
-# plain library + CLI).  Install it into the interpreter this script picks, e.g.
-#   ../wreader/.venv/bin/python -m pip install pyinstaller
+# plain library).  Install it into the interpreter this script picks, e.g.
+#   core/.venv/bin/python -m pip install pyinstaller
 
 set -euo pipefail
 
@@ -45,25 +45,40 @@ gui_root="$(dirname "$here")"
 # 无论从哪个目录调用，后面的相对路径都按仓库根算
 cd "$gui_root"
 
-# 默认按"两个仓库并排"找内核；换布局就设 WREADER_ROOT
-if [[ -n "${WREADER_ROOT:-}" ]]; then
-  core_root="$(cd "$WREADER_ROOT" && pwd)"
+# 内核就在本仓库里：<repo>/core（2026-10-11 起；换布局就设 PAGET_CORE_ROOT 指过去）
+if [[ -n "${PAGET_CORE_ROOT:-}" ]]; then
+  core_root="$PAGET_CORE_ROOT"
 else
-  core_root="$(cd "$gui_root/../wreader" && pwd)"
+  core_root="$gui_root/core"
+fi
+# 存在才去规范化成绝对路径（不存在时不在这里炸，留给下面那条报错把话说清）
+if [[ -d "$core_root" ]]; then
+  core_root="$(cd "$core_root" && pwd)"
+fi
+# 内核必须在场，而且必须是**源码树**（要能 import wreader、还要那份 wreader/data/）。
+if [[ ! -d "$core_root/wreader" ]]; then
+  cat >&2 <<EOF
+error: $core_root 里没有 wreader 包（内核是本仓库的一部分，应该在 $gui_root/core）
+       两条路：
+         ① 重新拿一份 Paget —— core/ 就在里面；
+         ② 或者告诉这个脚本内核在哪： export PAGET_CORE_ROOT=<那份 wreader 包的上一级目录>
+       （安装包里带的是冻出来的 core/paget-core，不进源码树。）
+EOF
+  exit 1
 fi
 # 导出给 spec 用，两边看到的是同一个路径
-export WREADER_ROOT="$core_root"
+export PAGET_CORE_ROOT="$core_root"
 
 # 跑 PyInstaller 的解释器：显式指定 > 内核 venv > PATH 上的 python3
-if [[ -n "${WREADER_CORE_PYTHON:-}" ]]; then
-  python="$WREADER_CORE_PYTHON"
+if [[ -n "${PAGET_CORE_PYTHON:-}" ]]; then
+  python="$PAGET_CORE_PYTHON"
 elif [[ -x "$core_root/.venv/bin/python" ]]; then
   python="$core_root/.venv/bin/python"
 else
   python="$(command -v python3 || true)"
 fi
 if [[ -z "$python" || ! -x "$python" ]]; then
-  echo "error: no usable Python found (set WREADER_CORE_PYTHON)" >&2
+  echo "error: no usable Python found (set PAGET_CORE_PYTHON)" >&2
   exit 1
 fi
 
@@ -88,7 +103,7 @@ if [[ -z "$triple" ]]; then
   exit 1
 fi
 # Tauri 打包时按这个相对路径找资源源（见 tauri.conf.json 的 bundle.resources）
-target="src-tauri/binaries/werd-core"
+target="src-tauri/binaries/paget-core"
 
 # 构建与产物都放临时目录，工作树里不留 build/ 与 dist/
 scratch="$(mktemp -d)"
@@ -105,14 +120,14 @@ echo "building  : (this takes a minute)"
   --noconfirm \
   --distpath "$scratch/dist" \
   --workpath "$scratch/build" \
-  "$here/werd-core.spec"
+  "$here/paget-core.spec"
 
 # 装到 Tauri 期望的位置：整目录覆盖（旧产物一并清掉，免得留着一份误导人的旧内核）
 rm -rf "$target"
 mkdir -p src-tauri/binaries
-cp -R "$scratch/dist/werd-core" "$target"
+cp -R "$scratch/dist/paget-core" "$target"
 
-echo "installed : $target/werd-core ($(du -sh "$target" | cut -f1) total, $(file -b "$target/werd-core" | cut -d, -f1,2))"
+echo "installed : $target/paget-core ($(du -sh "$target" | cut -f1) total, $(file -b "$target/paget-core" | cut -d, -f1,2))"
 
 # 默认验一遍：能编出来不等于能干活
 if [[ "${1:-}" == "--no-smoke" ]]; then
@@ -120,10 +135,10 @@ if [[ "${1:-}" == "--no-smoke" ]]; then
 else
   echo "smoke     :"
   # 用同一个解释器当客户端（它本来就是这个仓库的开发环境）
-  "$python" "$here/smoke_core.py" "$target/werd-core"
+  "$python" "$here/smoke_core.py" "$target/paget-core"
 fi
 
 echo
 echo "next      : npm run tauri build -- --ignore-version-mismatches   # 打包成 .app / .dmg"
-echo "            (the sidecar lands in the bundle as Resources/core/werd-core)"
+echo "            (the sidecar lands in the bundle as Resources/core/paget-core)"
 echo "            (the flag is needed while this machine is on rustc 1.87 -- see README「打包」)"

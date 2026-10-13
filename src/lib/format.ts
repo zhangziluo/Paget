@@ -2,7 +2,7 @@
  * Shared formatting rules.
  *
  * Every function here mirrors a rule the Python core already uses, so the GUI and
- * `werd` never disagree about a number:
+ * the core never disagree about a number:
  *
  * * `percentageOf` is `library.position_percentage`,
  * * `formatHours` is `stats.format_hours`,
@@ -38,7 +38,9 @@ export function duration(seconds: number): string {
   if (seconds < 60) return `${seconds} 秒`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes} 分钟`;
-  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
+  // 整点小时不拖一个「0 分」（内核 stats.format_hours 也是这个规矩）
+  const hours = Math.floor(minutes / 60);
+  return minutes % 60 === 0 ? `${hours} 小时` : `${hours} 小时 ${minutes % 60} 分`;
 }
 
 /**

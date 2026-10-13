@@ -1,0 +1,130 @@
+/*
+ * 图片模式的 PDF 阅读页（`components/PdfReader.tsx` + `PdfPages.tsx`）。
+ *
+ * 字号、配色、顶栏都沿用文字阅读页那一套（`.reader-bar` / `.ghost` / `.dim` /
+ * `.notice`），这里只补图片模式独有的三块：滚动的页面列、每页右下角的页码、
+ * 以及贴在最下沿的进度条。页面本身不带任何装饰 —— 白纸一张就好，别让阅读器
+ * 的样式盖过书自己的排版。
+ */
+
+.pdf-view {
+  position: fixed;
+  inset: 0;
+  /* 页面列以外的地方是“桌面”：比纸暗一点，纸才浮得起来 */
+  background: #2b2b2b;
+  overflow: hidden;
+}
+
+/* 页面列：竖向滚动，横向居中 */
+.pdf-scroll {
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* 滚动条不占版面：页面宽度是按窗口算的，多一条滚动条会挤出去 */
+  scrollbar-width: thin;
+  display: flex;
+  justify-content: center;
+  padding: 24px 0 48px;
+}
+
+.pdf-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* 一页：白纸 + 一点投影，画布铺满它 */
+.pdf-sheet {
+  position: relative;
+  background: #fff;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.35),
+    0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.pdf-canvas {
+  display: block;
+  /* 画布的实际尺寸由 JS 按屏幕像素比写死（这样高清屏才不发虚） */
+  width: 100%;
+  height: 100%;
+}
+
+/* 每页右下角的页码：贴在纸上，淡淡的，不挡字 */
+.pdf-folio {
+  position: absolute;
+  right: 10px;
+  bottom: 6px;
+  font-size: 12px;
+  opacity: 0.55;
+}
+
+.pdf-tail {
+  margin: 18px 0 0;
+  font-size: 13px;
+}
+
+.pdf-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 顶栏旁那颗收起 / 展开按钮：浮在右上角，收起顶栏时它是唯一入口 */
+.pdf-bar-toggle {
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  z-index: 30;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* 提示（成就 / 转换成文字的回执 / 错误）：浮在顶上居中，不占版面 */
+.pdf-note {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 29;
+  margin: 0;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+
+/* 自动翻页那枚小牌子（`.pdf-note` 的底色 + 能点开「阅读设置」）：按下去要像个按钮 */
+.pdf-chip {
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pdf-chip:hover {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+/* 进度条：贴在最下沿，和文字阅读页那条同一个意思 */
+.pdf-progress {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.pdf-progress span {
+  display: block;
+  height: 100%;
+  background: #e8c37a;
+  transition: width 0.2s ease;
+}

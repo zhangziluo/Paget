@@ -19,14 +19,14 @@ import type {
 type Running = "" | "export" | "restore" | "maintenance";
 
 /**
- * The data page: everything `werd data export|import` / `werd prune` /
- * `werd clear` do, grouped in one place (it lives behind the study's gear).
+ * The data page: the core's data housekeeping (export / import / prune / clear),
+ * grouped in one place (it lives behind the study's gear).
  *
  * Every action goes through the core, so the converted texts, the index and the
  * bundles are byte-for-byte what the terminal commands produce.  Paths are typed
  * rather than picked with a file dialog: exporting a bundle is a once-in-a-while
  * operation, and a typed path stays predictable.  Importing books, which *is*
- * frequent, moved to the shelf's "＋" button (see `Shelf.tsx`).
+ * frequent, moved to the shelf's wicker-basket button (see `Shelf.tsx`).
  */
 export default function Data(props: {
   onLibraryChanged: () => void;
@@ -54,10 +54,10 @@ export default function Data(props: {
       // 备份默认写进项目数据目录（内核的 data_dir，见 lib.rs 的 use_project_data_root）：
       // 打开这一页就能直接点「导出 / 导入备份」，不用先自己拼路径
       setExportPath(
-        (current) => current || `${loaded.data_dir}/wreader-backup.json`,
+        (current) => current || `${loaded.data_dir}/paget-backup.json`,
       );
       setRestorePath(
-        (current) => current || `${loaded.data_dir}/wreader-backup.json`,
+        (current) => current || `${loaded.data_dir}/paget-backup.json`,
       );
       setError("");
     } catch (err) {
@@ -74,7 +74,7 @@ export default function Data(props: {
     // 同上：空路径给一句人话，而不是让按钮永远是灰的
     const path = exportPath.trim();
     if (!path) {
-      setError("先填备份要写到哪个文件，例如项目文件夹里的 .wreader/wreader-backup.json");
+      setError("先填备份要写到哪个文件，例如项目文件夹里的 .wreader/paget-backup.json");
       return;
     }
     setRunning("export");
@@ -148,12 +148,12 @@ export default function Data(props: {
       {error ? <p className="error">{error}</p> : null}
 
       <section className="group">
-        <h2>导出备份（werd data export）</h2>
+        <h2>导出备份</h2>
         <div className="search">
           <input
             value={exportPath}
             onChange={(event) => setExportPath(event.currentTarget.value)}
-            placeholder="写到哪个文件（默认：项目文件夹里的 .wreader/wreader-backup.json）"
+            placeholder="写到哪个文件（默认：项目文件夹里的 .wreader/paget-backup.json）"
           />
           <button onClick={() => void doExport()} disabled={busy}>
             {running === "export" ? "导出中…" : "导出"}
@@ -168,7 +168,7 @@ export default function Data(props: {
       </section>
 
       <section className="group">
-        <h2>导入备份（werd data import，只增不减）</h2>
+        <h2>导入备份（只增不减）</h2>
         <div className="search">
           <input
             value={restorePath}

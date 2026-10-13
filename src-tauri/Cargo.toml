@@ -37,9 +37,17 @@ crc32fast = "1"
 # 本地缓存用的 SQLite 驱动。直接用 sqlx 而不是 tauri-plugin-sql：这样 schema、
 # 中文分词和查询都能在 `cargo test` 里脱离 webview 验证（见 src/db.rs 的模块注释）。
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+# Windows / Linux 的「＋ 导入」原生选择器（macOS 走自带的 NSOpenPanel，见 lib.rs 的 macos_picker）。
+# **故意不加 target 门控**：这样 lib.rs 里那段 desktop_picker 在开发机（macOS）上也参与编译 ——
+# 它只能在 Windows 上跑，而开发机打不出 Windows 包，不加这一条它一辈子过不了类型检查。
+tauri-plugin-dialog = "2"
 
 # macOS 上「＋」按钮弹出的原生文件浏览器（NSOpenPanel）。
-# 不引 tauri-plugin-dialog：它的 open() 只能在"选文件"和"选文件夹"里二选一，
+# macOS 上「＋」按钮弹出的原生文件浏览器（NSOpenPanel）。
+# 为什么这一档单独写：它能让文件与文件夹同框、还能多选，而对话框插件做不到（它的 open()
+# 只能在"选文件"和"选文件夹"里二选一）。**Windows / Linux 上现在走那个插件**
+# （见上面 tauri-plugin-dialog，以及 lib.rs 的 desktop_picker），但那两个平台的系统对话框
+# 同样做不到同框 —— 于是界面先问一句要哪一种（两个菜单项）。
 # 而 NSOpenPanel 能让文件与文件夹同框、还能多选（见 lib.rs 的 pick_import_paths）。
 # 这几个 crate 本来就在依赖树里（wry 用同一版本），只是显式声明才能直接调用。
 [target.'cfg(target_os = "macos")'.dependencies]

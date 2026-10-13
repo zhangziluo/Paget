@@ -15,6 +15,14 @@ dist-ssr
 # 内核数据：本机使用时放在项目文件夹里（见 src-tauri/src/lib.rs 的 use_project_data_root）
 .wreader/
 
+# Python 字节码缓存（packaging/*.py 跑一次就会出现）
+__pycache__/
+
+# 内核（core/）的开发环境与安装残留：本机装一次就够，不进版本控制
+core/.venv/
+core/*.egg-info/
+core/.pytest_cache/
+
 # 冻结的内核（packaging/build-core.sh 每跑一次就重写一遍，约 24 MB、与平台绑定）：
 # 可重建的构建产物，不进版本控制。
 src-tauri/binaries/

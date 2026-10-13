@@ -1,67 +1,109 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import BookContextMenu, {
+  BatchRenameDialog,
   BookPropsDialog,
   BookStatsDialog,
   ConfirmDeleteDialog,
   LimitDialog,
 } from "../components/BookContextMenu";
 import BookTransition, { type SpineRect } from "../components/BookTransition";
+import BookshelfManager from "../components/BookshelfManager";
+import ImportFlight from "../components/ImportFlight";
+import ImportPickMenu, { type ImportPickAnchor } from "../components/ImportPickMenu";
 import { SEAL_TOAST_TEXT, SealDissolve, SealToast } from "../components/SealEffect";
+import StickyNoteNav from "../components/StickyNoteNav";
 import {
   bookCover,
   coreCapabilities,
   getGuiSetting,
   importBooks,
+  importPickerModes,
   pickImportPaths,
   removeBook,
   saveCoverSpec,
   sealBook,
+  setBookMeta,
   setFinished,
   setGuiSetting,
+  type ImportPickMode,
 } from "../lib/core";
 import { generatedCover, parseCoverSpec, type CoverSpec } from "../lib/coverGenerator";
 import { expiredBooks, localDay, readDeadlines, writeDeadlines } from "../lib/deadlines";
 import { coreStamp } from "../lib/format";
+import { IMPORT_FLIGHT_KEY, normalizeImportFlight } from "../lib/importFlight";
+import {
+  packShelfRows,
+  planShelfPages,
+  normalizeSpineMode,
+  spineDepth,
+  spineTitleFontRem,
+  spineWidthRem,
+  stepPage,
+  SPINE_MIN_REM,
+  SPINE_MODE_KEY,
+} from "../lib/shelfLayout";
+import {
+  DRAG_THRESHOLD_PX,
+  SPRING_MS,
+  gapInRow,
+  mergeOrder,
+  moveBook,
+  normalizeLayout,
+  nudgeStep,
+  orderIndexAt,
+  readLayout,
+  renamedTitle,
+  renameTouched,
+  shiftBook,
+  squeezeIds,
+  writeLayout,
+  type LayoutHome,
+  type ManageDrag,
+  type ManageHit,
+  type ManageLayout,
+  type ManageRename,
+} from "../lib/shelfManage";
+import { shortcutFrom, shortcutKey } from "../lib/shortcuts";
+import {
+  DEFAULT_TOY_SETTINGS,
+  TOY_GAP_MAX,
+  TOY_GAP_MIN,
+  TOY_GAP_STEP,
+  TOYS,
+  loadToyGap,
+  loadToySettings,
+  normalizeToyGap,
+  placedToys,
+  saveToyGap,
+  saveToySettings,
+  toggleToy,
+  type ToySettings,
+} from "../lib/toyPrefs";
 import type { BookRow, DeadlineMap } from "../lib/types";
 
-/** 一屏放多少本书；超过一屏就用两侧的箭头翻屏，而不是滚动鼠标。 */
-const PAGE_SIZE = 40;
+/**
+ * 排内间距（rem）—— **与 `App.css` 的 `.shelf` 的 `gap` 是一对**，改一个就得改另一个：
+ * 那边排版时留这个缝，这边按厚度累加算「这一排放得下几本」时也要算上它。
+ */
+const SPINE_GAP_REM = 0.5;
+
+/** 书超过这么多屏，右上角才出现「跳到第几屏」的输入框（三屏以内用箭头点两下就到了）。 */
+const JUMP_MIN_PAGES = 4;
+
+/**
+ * 还没量到书排宽度时（SSR / 首帧）先按这个宽度排（rem）。
+ *
+ * 量宽度在 `useLayoutEffect` 里，**画之前**就会重排一次，所以这个值只是个起点；
+ * 它有确定的值（而不是 0），是为了让服务端渲染那份 HTML 也是稳定可断言的。
+ */
+const ASSUMED_ROW_REM = 76;
 
 /** 回车确认后，命中的书脊高亮多久（毫秒）。 */
 const HIGHLIGHT_MS = 2000;
 
 /** 置顶列表存在本机 gui_settings 里的键名（内核不认识"置顶"，这是界面自己的事）。 */
 const PINNED_KEY = "shelf.pinned";
-
-/** 书架上那只毛绒玩具的可选动物；选中的存在 localStorage（键名见 TOY_KEY）。
- *  emoji 不在这里 —— 造型是 CSS 画的（见 App.css 的 `.plush-<id>`），id 同时是 CSS 类名。 */
-const TOYS: { id: string; label: string }[] = [
-  { id: "rabbit", label: "兔子" },
-  { id: "owl", label: "猫头鹰" },
-  { id: "turtle", label: "乌龟" },
-  { id: "dog", label: "小狗" },
-  { id: "cat", label: "小猫" },
-];
-
-/** 选中的毛绒玩具存在浏览器自己的 localStorage 里（不碰内核数据）。 */
-const TOY_KEY = "shelf_toy";
-
-/** 读回上次选的玩具；没存过 / 存坏了 / 存了个不认识的 id 都回落到兔子。 */
-function readToy(): string {
-  // SSR 或非浏览器环境没有 localStorage：直接给默认值
-  if (typeof window === "undefined" || !window.localStorage) {
-    return TOYS[0].id;
-  }
-  try {
-    const saved = window.localStorage.getItem(TOY_KEY);
-    // 只认名单里的 id，免得被手改成不存在的动物
-    return TOYS.some((toy) => toy.id === saved) ? String(saved) : TOYS[0].id;
-  } catch {
-    // 隐私模式等场景读 localStorage 会直接抛异常：一样回落
-    return TOYS[0].id;
-  }
-}
 
 /** 指针靠近窗口哪一侧；"" = 在中间（两侧翻页箭头都不显示）。 */
 type Edge = "" | "left" | "right";
@@ -99,6 +141,30 @@ function useClock(): Date {
   return now;
 }
 
+/**
+ * 墙上那格数字时钟。
+ *
+ * **自成一个组件**：秒针在它自己身上跳，不牵动整面书架重渲染 —— 书一多，
+ * 每秒把四十张书脊卡片重算一遍纯属白烧 CPU（书架那侧另有自己的每秒定时器，
+ * 只管「有没有限时书到期」，见下面那个 effect）。
+ */
+function Clock() {
+  const now = useClock();
+  return (
+    <div className="widget clock" title="当前系统时间">
+      <span className="clock-time">{now.toLocaleTimeString("zh-CN", { hour12: false })}</span>
+      <span className="clock-date">
+        {now.toLocaleDateString("zh-CN", {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+          weekday: "long",
+        })}
+      </span>
+    </div>
+  );
+}
+
 /** 天亮 / 天黑的分界（按系统时间）：6 点天亮，18 点天黑。 */
 const DAY_START = 6;
 const NIGHT_START = 18;
@@ -127,34 +193,15 @@ function useSky(): Sky {
   return sky;
 }
 
-/** 墙上的挂件（日历 / 徽章盒 / 齿轮）：鼠标移上去会发出白色散光。 */
-function Widget(props: {
-  kind: string;
-  icon: string;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className={`widget ${props.kind}`}
-      title={props.label}
-      onClick={props.onClick}
-    >
-      <span className="widget-icon" aria-hidden="true">
-        {props.icon}
-      </span>
-      <span className="widget-label">{props.label}</span>
-    </button>
-  );
-}
-
 /**
  * 一只毛绒玩具的骨架：尾巴 → 身子（含浅色肚皮）→ 四肢 → 耳朵 → 头（缝线 + 点眼 + 鼻子）。
  *
  * 这里只摆结构，具体长什么样完全交给 CSS 的 `.plush-<id>`（见 App.css）——
  * 和留声机、收音机一样是纯 CSS 塑形，不用任何图片。
  * 传了 *label* 就是一张有名字的图（书架上的那只）；不传就当纯装饰（面板里的小图标）。
+ *
+ * **只有「朝前」一种造型** —— 从前还能朝左 / 朝右 / 朝后（`data-facing` 换一套画法），
+ * 2026-10-10 按用户要求把那三面去掉了，所以那个属性也没了。
  */
 function Plush(props: { id: string; label?: string }) {
   return (
@@ -176,17 +223,92 @@ function Plush(props: { id: string; label?: string }) {
       {/* 后脚（乌龟是后鳍） */}
       <span className="plush-leg l" />
       <span className="plush-leg r" />
-      {/* 耳朵（乌龟没有耳朵，CSS 里藏掉） */}
-      <span className="plush-ear l" />
-      <span className="plush-ear r" />
-      {/* 头：缝线、点眼、鼻子都在脸上 */}
-      <span className="plush-head">
-        <span className="plush-stitch" />
-        <span className="plush-eye l" />
-        <span className="plush-eye r" />
-        <span className="plush-snout" />
+      {/* 头 + 耳朵绑成一组：管理模式下抬头 / 转头 / 缩头都动这一层 ——
+          头和耳朵因此永远是一个整体（见 App.css 的 `.plush-head-group`）。
+          这一层本身不画东西，尺寸与 `.plush` 一致，所以里面的定位一字不变。 */}
+      <span className="plush-head-group">
+        {/* 耳朵（乌龟没有耳朵，CSS 里藏掉） */}
+        <span className="plush-ear l" />
+        <span className="plush-ear r" />
+        {/* 头：缝线、点眼、鼻子都在脸上 */}
+        <span className="plush-head">
+          <span className="plush-stitch" />
+          <span className="plush-eye l" />
+          <span className="plush-eye r" />
+          <span className="plush-snout" />
+        </span>
       </span>
     </span>
+  );
+}
+
+/**
+ * 换玩偶的小面板（挂在玩具那一格里、从它上方弹出，样式见 App.css 的 `.toy-picker`）：
+ * **一行一只**（整行就是按钮：缩略图 + 名字，点一下放上 / 取下），架上摆着**两只以上**
+ * 时再多一行**间距**（一只也没有「之间」可言）。
+ *
+ * 单拆出来是为了能在 node 里整块渲染点数：`Shelf` 太大、SSR 进不去，而这个面板又挂在
+ * 组件内部 state 上（平时收着），不拆就只有出图能看。**面板自己不碰 `localStorage`** ——
+ * 摆法 / 间距存哪儿是 `lib/toyPrefs` 的事，这里只管画与回调。
+ */
+export function ToyPicker(props: {
+  /** 三只各自的摆法（`lib/toyPrefs` 那份存档） */
+  toys: ToySettings;
+  /** 相邻两只之间的间距（rem；正数分开、负数挨在一起） */
+  gap: number;
+  /** 架上摆着几只 —— 少于两只就不显示间距那一行 */
+  placedCount: number;
+  onToggle: (id: string) => void;
+  onGap: (gap: number) => void;
+}) {
+  return (
+    <div className="toy-picker" role="group" aria-label="毛绒玩具">
+      {TOYS.map((item) => {
+        const place = props.toys[item.id] ?? DEFAULT_TOY_SETTINGS[item.id];
+        return (
+          <div className="toy-line" key={item.id}>
+            {/* **整行就是按钮**：点哪儿都算「放上 / 取下」。从前这行右边还排着四颗
+                「前 / 左 / 右 / 后」的小方块（2026-10-10 按用户要求去掉三面、只留正面），
+                那几颗占的位置现在归按钮 —— 行宽由下面「间距」那行定，多出来的部分全在
+                按钮里（看着是一整条、点着也顺手） */}
+            <button
+              type="button"
+              className={`toy-choice${place.on ? " active" : ""}`}
+              title={place.on ? `把${item.label}收起来` : `把${item.label}摆上去`}
+              aria-label={place.on ? `把${item.label}收起来` : `把${item.label}摆上去`}
+              aria-pressed={place.on}
+              onClick={() => props.onToggle(item.id)}
+            >
+              {/* 缩略图：与书架上那只同一套造型（只是缩小了）。外面这层定尺寸，
+                  里面的 `.plush` 绝对定位居中（见 App.css 的 `.toy-thumb .plush`）*/}
+              <span className="toy-thumb">
+                <Plush id={item.id} />
+              </span>
+              <span className="toy-name">{item.label}</span>
+            </button>
+          </div>
+        );
+      })}
+      {/* 间距：**摆上两只以上才有「之间」可言** —— 所以平时不出现，省得点进来看到
+          一根用不上的滑杆。往左挤紧、往右分开（负数 = 挨在一起，就是从前那一档） */}
+      {props.placedCount >= 2 ? (
+        <div className="toy-line toy-gap-line">
+          <span className="toy-name">间距</span>
+          <input
+            type="range"
+            className="toy-gap-slider"
+            min={TOY_GAP_MIN}
+            max={TOY_GAP_MAX}
+            step={TOY_GAP_STEP}
+            value={props.gap}
+            aria-label="玩偶之间的距离"
+            title="玩偶之间的距离：往右分开、往左挤紧（负数 = 挨在一起）"
+            onChange={(event) => props.onGap(Number(event.currentTarget.value))}
+          />
+          <span className="toy-gap-value">{props.gap.toFixed(1)}rem</span>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -195,8 +317,24 @@ function Plush(props: { id: string; label?: string }) {
  *
  * 右键、或触屏按住 550ms，都会通过 `onMenu` 把菜单弹在指针位置。
  */
-function BookSpine(props: {
+/**
+ * 一根书脊（一整本书）。
+ *
+ * `memo` 包着：书架上的书一多（一屏最多四十本），任何一次重渲染都要重算四十份 JSX，
+ * 而它们绝大多数时候什么都没变 —— 鼠标贴到左右边缘亮箭头、开个右键菜单、
+ * 翻到别的屏，都不该牵动这些卡片。**所以传进来的 props 要保持「值」**（布尔 / 字符串 /
+ * 稳定的回调），别传每帧新建的对象。
+ */
+const BookSpine = memo(function BookSpine(props: {
   book: BookRow;
+  /** 书脊厚度（rem）—— 动态模式按总字数算（`spineWidthRem`），统一模式一律保底 */
+  width: number;
+  /** 厚度落在「最薄…最厚」之间的位置（0–1）：侧边那道厚度阴影按它加深 */
+  depth: number;
+  /** 书脊上那行书名的字号（rem）—— 长书名自动缩小，保证整条排得下（不截断） */
+  titleFont: number;
+  /** 字数没统计出来（解析失败 / 空文件）：宽度走保底那一档，并留个标记 */
+  unknown: boolean;
   /** 点开这本书；顺带把书脊在屏幕上的位置交出去（过场要靠它飞回原位） */
   onOpen: (book: BookRow, origin: SpineRect) => void;
   onMenu: (book: BookRow, x: number, y: number) => void;
@@ -206,6 +344,26 @@ function BookSpine(props: {
   limited?: string | null;
   /** 正在被"抽出来"（过场的第一阶段） */
   pulling?: boolean;
+  /** 管理模式下：这一格在「格子序列」里的下标（拖拽判定与落位都要用它） */
+  slot?: number;
+  /** 管理模式下：按下不再开书，而是准备拖（移动超过阈值才算拖，见父组件的 `grabBook`） */
+  managing?: boolean;
+  /** 管理模式下：被落到旁边的书挤扁（`scaleX(0.8)`），松手后弹性恢复 */
+  squeezed?: boolean;
+  /** 管理模式下：这本书正在被拖走 —— 原位留空，只留一张半透明缩略图 */
+  emptied?: boolean;
+  /** 管理模式下按下：备一个「可能要拖」的手势 */
+  onGrab?: (book: BookRow, event: React.PointerEvent<HTMLLIElement>) => void;
+  /** 选择模式：这一根书脊按下 / 点击都只切换勾选（不再开书、也不再拖） */
+  selecting?: boolean;
+  /** 选择模式：这一本被勾上了（书脊抬起 + 暖色描边 + 右上角打勾） */
+  selected?: boolean;
+  /** 选择模式：点一下切换勾选状态 */
+  onToggleSelect?: (book: BookRow) => void;
+  /** 排序时点中的就是这一本（抬起来 + 暖色描边，随后可用方向键挪） */
+  picked?: boolean;
+  /** 点一下书脊（没在拖、也不是选择模式）：选中它，之后用方向键挪 */
+  onPick?: (book: BookRow) => void;
 }) {
   const { book } = props;
   // 长按计时器：按住不动 550ms 才算长按
@@ -221,6 +379,8 @@ function BookSpine(props: {
   }
 
   function startPress(event: React.TouchEvent) {
+    // 选择模式：长按不弹单本菜单（这里点一下就是勾选，弹菜单只会打架）
+    if (props.selecting) return;
     const touch = event.touches[0];
     // 没有触点（异常事件）就不启动计时
     if (!touch) return;
@@ -243,10 +403,41 @@ function BookSpine(props: {
     <li
       // 封印动画要按 id 找回这根书脊的坐标（见 spineRect）
       data-book-id={book.id}
+      // 字数没统计出来（解析失败 / 空文件）：宽度已按保底那一档算，这里再留个标记
+      data-spine={props.unknown ? "unknown" : undefined}
+      title={props.unknown ? "字数没统计出来（解析失败或空文件）—— 书脊按最薄一档摆" : undefined}
       className={`spine-card${props.highlight ? " highlight" : ""}${props.pinned ? " pinned" : ""}${
         props.pulling ? " pulling" : ""
-      }`}
+      }${props.managing ? " manage" : ""}${props.squeezed ? " squeeze" : ""}${
+        props.emptied ? " emptied" : ""
+      }${props.selected ? " selected" : ""}${props.picked && props.managing ? " picked" : ""}`}
+      // 管理模式下按它认格子（data-slot = 这一格在「格子序列」里的下标）
+      data-slot={props.managing ? props.slot : undefined}
+      // 三个数交给 CSS：厚度（动态模式按字数）、厚度比例（侧边阴影深浅）、书名字号（长书名自动缩）
+      style={
+        {
+          "--spine-w": `${props.width}rem`,
+          "--spine-depth": String(props.depth),
+          "--spine-title-size": `${props.titleFont}rem`,
+        } as CSSProperties
+      }
+      onPointerDown={(event) => {
+        // 选择模式：按下只准备勾选，不准备拖（拖动会让「点击勾选」抖一下就落空）
+        if (props.selecting) return;
+        props.onGrab?.(book, event);
+      }}
       onClick={(event) => {
+        // 选择模式：点一下就是勾 / 取消勾
+        if (props.selecting) {
+          props.onToggleSelect?.(book);
+          return;
+        }
+        // 管理模式下抬手不算「打开书」：这一下是**选中**（拖动就是从这儿开始的；
+        // 拖完也顺势选中，接着可以用方向键一位一位地调）
+        if (props.managing) {
+          props.onPick?.(book);
+          return;
+        }
         // 长按刚弹过菜单：这次 click 只是抬手，不当成"打开"
         if (suppressClick.current) {
           suppressClick.current = false;
@@ -258,6 +449,8 @@ function BookSpine(props: {
       onContextMenu={(event) => {
         // 拦掉系统右键菜单，改弹我们自己的
         event.preventDefault();
+        // 管理模式下不弹自己的菜单：拖着书的时候它只会碍事（右键仍然不会漏出系统菜单）
+        if (props.managing) return;
         props.onMenu(book, event.clientX, event.clientY);
       }}
       onTouchStart={startPress}
@@ -265,6 +458,12 @@ function BookSpine(props: {
       onTouchMove={clearPress}
       onTouchCancel={clearPress}
     >
+      {/* 选择模式：右上角一枚勾选圈（纯装饰 —— 点击由整根书脊接管，这里别再拦一道） */}
+      {props.selecting ? (
+        <span className={`spine-check${props.selected ? " on" : ""}`} aria-hidden="true">
+          {props.selected ? "✓" : ""}
+        </span>
+      ) : null}
       <div className="spine">
         {/* 书脊：书名竖排（中文自上而下，英文按书脊惯例旋转 90°） */}
         <span className="spine-title" title={book.title || book.id}>
@@ -289,14 +488,18 @@ function BookSpine(props: {
       </div>
     </li>
   );
-}
+});
 
 /**
  * 书房：整间屋子就是书架页。
  *
- * 书多了（超过一屏 PAGE_SIZE 本）不出现滚动条，而是靠指针靠近左右两侧时出现的翻页箭头
- * 切换下一屏；最上面一栏并排着日历（统计）、数字时钟、透明玻璃徽章盒（成就），
- * 右上角是同步 / 清缓存 / 放大镜，右下角是齿轮（设置与数据）。
+ * 一屏之内不出现滚动条，书多了靠指针靠近左右两侧时浮现的翻页箭头翻屏。摆法是「一排一格」：
+ * **主屏**是书房全景 —— 窗、墙上那一栏（日历 / 数字时钟 / 徽章盒 / 齿轮 / 同步那几个小圆钮）、
+ * 摆件架，下面**只有一排书**（这一排的头一格是那只藤条篮子）；**第二屏起是整面书架** —— 窗与挂件
+ * 都收起来（`main` 上打 `.study.shelves`，见 `App.css`），**三排书**顶到最上面，
+ * 每排下面垫一块白色挡板，右上角浮着「回到主屏」（书超过 `JUMP_MIN_PAGES` 屏再多一个
+ * 「跳到第几屏」的输入框）。一排摆几本由窗口宽度决定（`booksPerRow` 量出来的），
+ * 所以「一屏固定多少本」这种数在这份代码里不存在。
  *
  * 搜索是**纯前端**的：点放大镜（或按 `/`、`⌘K`）会铺一层模糊遮罩并从顶部滑下输入框，
  * 输入即时按书名 / 作者过滤身后的书架；回车确认后收起遮罩、把命中的书脊高亮 2 秒，
@@ -307,13 +510,16 @@ export default function Shelf(props: {
   busy: boolean;
   error: string;
   onOpen: (book: BookRow) => void;
-  onSync: () => void;
+  onSync: () => Promise<BookRow[]>;
   onReset: () => void;
   onOpenStats: () => void;
   onOpenAchievements: () => void;
   onOpenDesk: () => void;
+  /** 进书房时是不是直接落在管理模式（`App.tsx` 记着上一次的状态，见 `onManageChange`） */
+  initialManaging?: boolean;
+  /** 管理模式开 / 关都报一声：`App.tsx` 记住它，去统计页看一眼再回来手里还拿着那把锤子 */
+  onManageChange?: (managing: boolean) => void;
 }) {
-  const now = useClock();
   // 白天 / 夜里：窗外的天色、屋子的明暗、台灯都按它切换
   const sky = useSky();
   // 点开一本书的过场：点的是哪本、封面怎么画、书脊在哪（null = 没在过场）
@@ -327,25 +533,72 @@ export default function Shelf(props: {
   // 当前第几屏 + 指针贴在哪一侧（决定箭头是否现身）
   const [page, setPage] = useState(0);
   const [edge, setEdge] = useState<Edge>("");
-  // 「＋」导入：是否正在进行 + 最近一次回执（出错原文另放）
+  // 量出来的「一排可用宽度」与当前根字号（rem → px 要用）；量之前先按 ASSUMED_ROW_REM 排着
+  const [rackSize, setRackSize] = useState({ width: 0, root: 16 });
+  // 书脊厚度模式：动态（按字数）/ 统一等宽 —— 存在本机 gui_settings，开书读一次
+  const [spineMode, setSpineMode] = useState<"dynamic" | "uniform">("dynamic");
+  // 右上角「跳到第几屏」输入框里正在敲的字（空着就显示当前屏号）
+  const [jumpText, setJumpText] = useState("");
+  // 第一条书排的 <ul>：量它的宽度就知道一排放得下几本（厚薄不一，得一本本累加）
+  const rackRef = useRef<HTMLUListElement | null>(null);
+  // 藤条篮子的导入：是否正在进行 + 最近一次回执（出错原文另放）
   const [importing, setImporting] = useState(false);
+  // 「＋」按一下之后弹什么：`["panel"]` = 面板一次挑完（macOS），`["files","folder"]` =
+  // 先问一句挑文件还是挑文件夹（Windows / Linux）。问不到就按 macOS 那一档走，照旧能用。
+  const [pickerModes, setPickerModes] = useState<string[]>(["panel"]);
+  // 那个「文件还是文件夹」的小菜单挂在哪儿（null = 没开）：值就是篮子当时的位置
+  const [pickAnchor, setPickAnchor] = useState<ImportPickAnchor | null>(null);
   const [importNotice, setImportNotice] = useState("");
   const [importError, setImportError] = useState("");
+  // 篮身那个盒子：导入飞行的起飞点由它量出来（篮口 ≈ 它高度的 55.4% 处，见 ImportFlight）
+  const basketRef = useRef<HTMLSpanElement | null>(null);
+  // 导入飞行动画：这一批新书 + 起飞点；null = 没在飞
+  const [flight, setFlight] = useState<{ books: BookRow[]; origin: SpineRect } | null>(null);
+  // 「导入后放不放飞行动画」：本机界面偏好（与「动态书脊厚度」同一套，进设置页改）
+  const [importFlight, setImportFlight] = useState(true);
+
+  // 管理模式：开关 + 布局（书的先后，存本机 gui_settings）、正在拖的书、落点、翻屏动画
+  // （初值从 props 来：从挂件页按 M 回到书房时，一进来就在管理模式里；只有挂载那一次读）
+  const [managing, setManaging] = useState(props.initialManaging ?? false);
+  const [layout, setLayout] = useState<ManageLayout>(() => normalizeLayout(null));
+  // 这份布局存在哪儿：新内核的 shelf.json（跟着书库走）还是本机 gui_settings（老内核的退路）
+  const [layoutHome, setLayoutHome] = useState<LayoutHome>("local");
+  // 正在拖的那本书 + 它原来在第几格（`at` = 格子序列里的下标，原位留空时要用）
+  const [dragging, setDragging] = useState<{ item: ManageDrag; at: number } | null>(null);
+  // 指针当前的落点（null = 不在任何一排上）：让位 / 压扁、玩偶拦截都看它
+  const [hover, setHover] = useState<ManageHit | null>(null);
+  // 拖到边缘翻屏时播一下书排的滑动动画（`stamp` 一换动画就重放）
+  const [flip, setFlip] = useState<{ dir: -1 | 1; stamp: number } | null>(null);
+  // 选择模式（批量编辑）：每根书脊上出现勾选框，点一下勾 / 取消勾
+  const [selecting, setSelecting] = useState(false);
+  // 勾上的书 id（可以跨屏、跨排；用 Set 便于 O(1) 判断某根书脊该不该打勾）
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  // 方向键排序**选中**的那一本书：点一下选中、再点同一本或 Esc 放开
+  // （与批量编辑的勾选无关 —— 那个是「要一起动手的几本」，这个是「手上拿着的那一本」）
+  const [picked, setPicked] = useState<string | null>(null);
+  // 方向键挪完要不要把屏跟着翻过去：分屏要等挪完那一帧才算得出来，所以先记一笔（见下面的 effect）
+  const followPick = useRef(false);
 
   // 置顶的书（本机界面状态，存 gui_settings，不碰内核）
   const [pinned, setPinned] = useState<string[]>([]);
   // 右键菜单：弹出位置 + 目标书；null = 没打开
   const [menu, setMenu] = useState<{ book: BookRow; x: number; y: number } | null>(null);
-  // 弹窗：阅读统计 / 属性 / 删除确认 / 限时模式
+  // 弹窗：单本的阅读统计 / 属性 / 删除确认 / 限时模式，以及批量编辑里那两个
+  // （批量改书名 / 批量删除 —— 它们没有「某一本」，作用对象是整份选择）
   const [dialog, setDialog] = useState<
-    { kind: "stats" | "props" | "delete" | "limit"; book: BookRow } | null
+    | { kind: "stats" | "props" | "delete" | "limit"; book: BookRow }
+    | { kind: "batchRename" | "batchDelete" }
+    | null
   >(null);
   // 删除 / 标记进行中 + 出错原文
   const [working, setWorking] = useState(false);
   const [actionError, setActionError] = useState("");
-  // 内核认不认 remove / finish（老内核没有这两个方法，右键菜单要按这个禁用）
+  // 批量操作的进度与结果（与导入回执同一套写法：先写「正在处理第 3/10 本」，最后写合计）
+  const [batchNotice, setBatchNotice] = useState("");
+  // 内核认不认 remove / finish / set_meta（老内核没有这几个方法，菜单项与编辑框要按这个禁用）
   const [canRemove, setCanRemove] = useState(true);
   const [canFinish, setCanFinish] = useState(true);
+  const [canEditMeta, setCanEditMeta] = useState(true);
   // 限时书：书 id -> 到期日（本机界面状态，存 gui_settings；内核不认识"限时"）
   const [deadlines, setDeadlines] = useState<DeadlineMap>({});
   // 正在封印哪一本（同一时刻只封一本），以及已经交出去的 id（书还没从书架消失前挡住重复触发）
@@ -363,6 +616,7 @@ export default function Shelf(props: {
         if (!alive) return;
         setCanRemove(caps.remove);
         setCanFinish(caps.finish);
+        setCanEditMeta(caps.setMeta);
       })
       .catch(() => {
         // 探测本身失败（内核还没起来等）就维持"支持"，不影响其它功能
@@ -372,19 +626,31 @@ export default function Shelf(props: {
     };
   }, []);
 
-  // 毛绒玩具：当前选中的动物 + 切换面板是否打开（选择存在本机 localStorage）
-  const [toy, setToy] = useState<string>(readToy);
+  // 摆件架上那几只玩偶：每只各自放不放（本机 localStorage，见 lib/toyPrefs）
+  const [toys, setToys] = useState<ToySettings>(loadToySettings);
+  // 相邻两只之间的间距（rem，本机；摆上两只以上才在面板里露出来）
+  const [toyGap, setToyGap] = useState<number>(loadToyGap);
   const [toyPicker, setToyPicker] = useState(false);
   const toyRef = useRef<HTMLLIElement | null>(null);
+  // 架子上摆着哪几只（按名单顺序）—— 书架渲染就照这个摆
+  const placed = placedToys(toys);
 
-  /** 换一只玩具：立刻换上去并写回 localStorage。 */
-  function chooseToy(id: string) {
-    setToy(id);
-    try {
-      window.localStorage.setItem(TOY_KEY, id);
-    } catch {
-      // 存不进去只是下次启动回到默认，不值得打断用户
-    }
+  /** 摆法一变就写回本机（存不进去只影响下次启动，见 lib/toyPrefs）。 */
+  function applyToys(next: ToySettings) {
+    setToys(next);
+    saveToySettings(next);
+  }
+
+  /** 间距一变就写回本机（面板上那根滑杆每动一格走这里）。 */
+  function applyToyGap(next: number) {
+    const gap = normalizeToyGap(next);
+    setToyGap(gap);
+    saveToyGap(gap);
+  }
+
+  /** 放上 / 取下这一只。 */
+  function flipToy(id: string) {
+    applyToys(toggleToy(toys, id));
   }
 
   // 切换面板打开时：点面板外或按 Esc 关掉
@@ -414,9 +680,6 @@ export default function Shelf(props: {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [toyPicker]);
-
-  // 当前那一只（即使存的 id 已经不认识了也不会是 undefined）
-  const activeToy = TOYS.find((item) => item.id === toy) ?? TOYS[0];
 
   // 启动时把置顶列表读回来
   useEffect(() => {
@@ -455,21 +718,26 @@ export default function Shelf(props: {
   /**
    * 到期检查：把到期的限时书就地封印。
    *
-   * 书架上的时钟每秒都在跳（`useClock`），所以这里**不需要另设 0 点的定时器** ——
-   * 每次重渲染都会重算一次"有没有书到期"，跨过 0 点那一刻自然就命中了。
+   * **自己每秒跳一下**（时钟已经拆成独立组件了，不能指望它带着整面书架重渲染）：
+   * 跨过 0 点那一刻自然命中；进页面时先立刻查一次，免得要等到下一秒。
    * 同一时刻只封一本（`sealing`），处理过的 id 记在 `sealedIds` 里，等书架刷新。
    */
   useEffect(() => {
-    // 内核不可用 / 正在封印：等下一轮（时钟每秒都在跳，不怕错过）
+    // 内核不可用 / 正在封印：这一轮不查（下一个 tick 还会再来）
     if (props.error || sealing) return;
-    const due = expiredBooks(props.books, deadlines, now).find(
-      (book) => !sealedIds.current.has(book.id),
-    );
-    if (!due) return;
-    // 先记下来：书还没从 props.books 里消失，下一秒不该重复触发
-    sealedIds.current.add(due.id);
-    void sealExpired(due);
-  }, [props.books, props.error, deadlines, now, sealing]);
+    const check = () => {
+      const due = expiredBooks(props.books, deadlines, new Date()).find(
+        (book) => !sealedIds.current.has(book.id),
+      );
+      if (!due) return;
+      // 先记下来：书还没从 props.books 里消失，下一秒不该重复触发
+      sealedIds.current.add(due.id);
+      void sealExpired(due);
+    };
+    check();
+    const id = window.setInterval(check, 1000);
+    return () => window.clearInterval(id);
+  }, [props.books, props.error, deadlines, sealing]);
 
   /** 置顶 / 取消置顶：排在书架最前，并写回 gui_settings（下次启动还在）。 */
   function togglePin(book: BookRow) {
@@ -510,6 +778,21 @@ export default function Shelf(props: {
     } finally {
       setWorking(false);
     }
+  }
+
+  /**
+   * 改一本书的书名 / 作者 / 标签（走内核 `set_meta`，与书架上看到的书名是同一份）。
+   *
+   * 标签还参与内核的模糊搜索，所以成功后必须重同步书架 —— 只改内存里那一行会让
+   * 搜索与卡片对不上。失败时把错误原样抛回弹窗（由它自己显示），这里不写页脚。
+   */
+  async function saveMeta(
+    book: BookRow,
+    meta: { title: string; author: string; tags: string[] },
+  ) {
+    await setBookMeta(book.id, meta);
+    setDialog(null);
+    props.onSync();
   }
 
   /** 设定 / 取消一本书的限时（写回 `gui_settings`；*day* 传空就是取消）。 */
@@ -578,20 +861,40 @@ export default function Shelf(props: {
     }
   }
 
-  // 置顶的排最前；其余保持内核给的顺序（Array#sort 是稳定的）
+  /**
+   * 书架上的先后：**存过的顺序优先**，内核新加的书（这次才导入的）接在后面
+   * （`mergeOrder` 顺便把已经不在了的书剔掉）。
+   */
+  const order = useMemo(
+    () => mergeOrder(props.books.map((book) => book.id), layout.order),
+    [props.books, layout.order],
+  );
+
+  /** 按 id 找书 —— 顺序表只认 id。 */
+  const booksById = useMemo(
+    () => new Map(props.books.map((book) => [book.id, book])),
+    [props.books],
+  );
+
+  // 置顶的排最前；其余保持上面那份顺序（Array#sort 是稳定的）
   const ordered = useMemo(() => {
-    if (pinned.length === 0) return props.books;
+    const list = order
+      .map((id) => booksById.get(id))
+      .filter((book): book is BookRow => book !== undefined);
+    if (pinned.length === 0) return list;
     const rank = new Map(pinned.map((id, index) => [id, index]));
-    return [...props.books].sort(
+    return [...list].sort(
       (a, b) =>
         (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
         (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
     );
-  }, [props.books, pinned]);
+  }, [order, booksById, pinned]);
 
   // 搜索只在本地书目上过滤（书名 / 作者），不调后端
   const keyword = term.trim().toLowerCase();
-  const filtering = searchOpen && keyword.length > 0;
+  // 管理模式下不按搜索过滤：拖拽落点算出来的「第几本」必须与整架的顺序对得上
+  // （搜索遮罩本来就盖住书脊、拖不起来，这一条只是把该前提写死）
+  const filtering = searchOpen && keyword.length > 0 && !managing;
   const visible = filtering
     ? ordered.filter(
         (book) =>
@@ -605,6 +908,153 @@ export default function Shelf(props: {
     setSearchOpen(false);
     setTerm("");
     setPage(0);
+  }
+
+  /* ── 批量编辑（管理模式的「选择」子状态） ──────────────────────────────── */
+
+  /**
+   * 勾上 / 取消勾一本书。
+   *
+   * `useCallback` 且不依赖任何 state：书脊卡片包了 `memo`，这个回调要一路稳定地传进
+   * 一屏几十张卡片，否则每勾一本都会让整架重算（与 `openBook` / `openMenu` 同一条理由）。
+   */
+  const toggleSelect = useCallback((book: BookRow) => {
+    setSelected((now) => {
+      const next = new Set(now);
+      if (next.has(book.id)) next.delete(book.id);
+      else next.add(book.id);
+      return next;
+    });
+  }, []);
+
+  /** 进 / 出「批量编辑」；出去（返回排序 / 完成）时把勾选与提示都清掉。 */
+  function toggleSelecting() {
+    const next = !selecting;
+    setSelecting(next);
+    // 进批量编辑时把「方向键选中的那一件」放开：这一层的方向键要留给翻屏，
+    // 免得手上还挂着一件东西、方向键却被另一样东西占着（两个状态不该叠着用）
+    if (next) setPicked(null);
+    if (!next) {
+      setSelected(new Set());
+      setBatchNotice("");
+    }
+  }
+
+  /** 全选：管理模式下不按搜索过滤，所以「全选」就是整架。 */
+  function selectAll() {
+    setSelected(new Set(ordered.map((book) => book.id)));
+  }
+
+  /** 清空选择。 */
+  function clearSelection() {
+    setSelected(new Set());
+  }
+
+  /** 这一份选择对应的书（按书架顺序；已经不在架上的自动忽略）。 */
+  const selectedBooks = useMemo(
+    () => ordered.filter((book) => selected.has(book.id)),
+    [ordered, selected],
+  );
+
+  /**
+   * 批量删除：一本一条地走内核 `remove`（内核一次只吃一本）。
+   *
+   * 与导入同一套写法：**每本开始前先把进度写出去**（删文件 + 改索引都要时间），
+   * 中途某一本失败就继续做下去、把失败的记下来 —— 已删的不会回滚，也不该假装没发生。
+   */
+  async function batchDelete() {
+    const books = selectedBooks;
+    setWorking(true);
+    setActionError("");
+    setBatchNotice("");
+    let done = 0;
+    const failed: string[] = [];
+    for (const [index, book] of books.entries()) {
+      setBatchNotice(`正在删除第 ${index + 1}/${books.length} 本：${book.title || book.id}`);
+      try {
+        await removeBook(book.id);
+        done += 1;
+      } catch (err) {
+        failed.push(`${book.title || book.id}（${String(err)}）`);
+      }
+    }
+    setDialog(null);
+    setWorking(false);
+    setSelected(new Set());
+    setBatchNotice(
+      `已删除 ${done} 本` +
+        (failed.length > 0 ? ` · 失败 ${failed.length} 本：${failed.join("、")}` : ""),
+    );
+    props.onSync();
+  }
+
+  /** 批量标记已读 / 未读（内核 `finish`；阅读进度与时长一概不动）。 */
+  async function batchMarkFinished(finished: boolean) {
+    const books = selectedBooks;
+    setWorking(true);
+    setActionError("");
+    setBatchNotice("");
+    let done = 0;
+    const failed: string[] = [];
+    for (const [index, book] of books.entries()) {
+      setBatchNotice(
+        `正在标记第 ${index + 1}/${books.length} 本：${book.title || book.id}`,
+      );
+      try {
+        await setFinished(book.id, finished);
+        done += 1;
+      } catch (err) {
+        failed.push(`${book.title || book.id}（${String(err)}）`);
+      }
+    }
+    setWorking(false);
+    setSelected(new Set());
+    setBatchNotice(
+      `已标记${finished ? "已读" : "未读"} ${done} 本` +
+        (failed.length > 0 ? ` · 失败 ${failed.length} 本：${failed.join("、")}` : ""),
+    );
+    props.onSync();
+  }
+
+  /**
+   * 批量改书名（内核 `set_meta`；作者与标签原样带回去）。
+   *
+   * 新书名由 `lib/shelfManage.ts` 的纯函数算（`renamedTitle`）—— 每本原名不同，只能一本一条地交；
+   * 规则把书名改空的那几本跳过并记下来（内核也会拒绝空书名，不白跑一趟）。只有书名会变，
+   * 正文、进度与阅读时长一概不碰（这也是 `set_meta` 的语义）。
+   */
+  async function batchRename(rule: ManageRename) {
+    if (!renameTouched(rule)) return;
+    const books = selectedBooks;
+    setWorking(true);
+    setActionError("");
+    setBatchNotice("");
+    let done = 0;
+    const skipped: string[] = [];
+    const failed: string[] = [];
+    for (const [index, book] of books.entries()) {
+      setBatchNotice(`正在改名第 ${index + 1}/${books.length} 本：${book.title || book.id}`);
+      const title = renamedTitle(book.title || book.id, rule).trim();
+      if (!title) {
+        skipped.push(book.title || book.id);
+        continue;
+      }
+      try {
+        await setBookMeta(book.id, { title, author: book.author, tags: book.tags ?? [] });
+        done += 1;
+      } catch (err) {
+        failed.push(`${book.title || book.id}（${String(err)}）`);
+      }
+    }
+    setDialog(null);
+    setWorking(false);
+    setSelected(new Set());
+    setBatchNotice(
+      `已改名 ${done} 本` +
+        (skipped.length > 0 ? ` · 跳过（书名为空）${skipped.length} 本` : "") +
+        (failed.length > 0 ? ` · 失败 ${failed.length} 本：${failed.join("、")}` : ""),
+    );
+    props.onSync();
   }
 
   /** 回车确认：收起搜索，命中的书脊高亮 HIGHLIGHT_MS 后自动落掉。 */
@@ -638,7 +1088,467 @@ export default function Shelf(props: {
     [],
   );
 
-  // 键盘快捷键：Esc 取消，Cmd/Ctrl+K 或 "/" 唤起（正在输入框里打字时不抢）
+  /**
+   * 量书排宽度 → 一排放得下几本（书脊厚薄不一，得按实际宽度一本本累加，见 `packShelfRows`）。
+   *
+   * 量的是第一条书排的 `<ul>`：它就是 `.shelf` 本身，宽度即这一排可用的宽度。
+   * 用 `useLayoutEffect`（画之前量完并重排，不会闪一下），窗口变化交给 `ResizeObserver`。
+   */
+  useLayoutEffect(() => {
+    const el = rackRef.current;
+    if (!el) return;
+    function measure() {
+      if (!el) return;
+      // rem → px 要按当前根字号换算（用户可能把界面字号调过）
+      const root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      setRackSize({ width: el.clientWidth, root });
+    }
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  /**
+   * 书脊厚度模式（动态 / 统一等宽）读一次。
+   *
+   * 它存在本机 `gui_settings`（内核不认识它，与「置顶」同一个做法）。在设置页改完回到书架时，
+   * 书架是**重新挂载**的（设置页是另一个整页），所以开书读一次就够，不用订阅变化。
+   */
+  useEffect(() => {
+    let alive = true;
+    getGuiSetting(SPINE_MODE_KEY)
+      .then((raw) => {
+        if (alive) setSpineMode(normalizeSpineMode(raw));
+      })
+      .catch(() => {
+        // 读不到就按默认的「动态」，不影响书架
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /**
+   * 「导入后放不放飞行动画」也读一次（同一个做法：只存本机 `gui_settings`）。
+   *
+   * 设置页改完回到书架时书架是**重新挂载**的，所以开书读一次就够，不用订阅变化。
+   */
+  useEffect(() => {
+    let alive = true;
+    getGuiSetting(IMPORT_FLIGHT_KEY)
+      .then((raw) => {
+        if (alive) setImportFlight(normalizeImportFlight(raw));
+      })
+      .catch(() => {
+        // 读不到就按默认的「放」，不影响导入
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /**
+   * 「＋」按一下该弹什么，问壳层一次（`import_picker_modes`）。
+   *
+   * macOS 的系统面板文件与文件夹同框 → `["panel"]`，一按就开面板；Windows / Linux 的系统
+   * 对话框只能二选一 → `["files","folder"]`，先弹一个小菜单问一句（见 ImportPickMenu）。
+   * **不在浏览器里跑时这个命令不存在**（比如 SSR 冒烟）：那就保持初值 `["panel"]`，
+   * 也就是「按了直接开面板」这条最老的路。
+   */
+  useEffect(() => {
+    let alive = true;
+    importPickerModes()
+      .then((modes) => {
+        // 只认「一组非空字符串」；别的（undefined / 空数组 / 不是数组）都当没问过
+        if (alive && Array.isArray(modes) && modes.length > 0) setPickerModes(modes);
+      })
+      .catch(() => {
+        // 问不到就用默认那一档，不影响导入
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /**
+   * 管理模式的布局读一次：**优先问内核**（`shelf_layout`，存在书库里，
+   * 跟着书库走），老内核 / 内核没起来就回落到本机 `gui_settings` 的老键 —— 两边都是
+   * 归一化过的同一份形状，所以只多记一个 `home`（见 `lib/shelfManage.ts` 的 `readLayout`）。
+   *
+   * 读回来之后还要过一次 `mergeOrder`：存过的顺序里可能有已经不在了的书（删掉 /
+   * 封印掉的），而内核新加的书得接在后面 —— 这些都在渲染时按 id 并，不在这里改。
+   */
+  useEffect(() => {
+    let alive = true;
+    readLayout()
+      .then(({ layout: savedLayout, home }) => {
+        if (!alive) return;
+        setLayout(savedLayout);
+        // 记下它存在哪儿：后面每一次写回都要写回原处（内核对内核、本机对本机）
+        setLayoutHome(home);
+      })
+      .catch(() => {
+        // readLayout 自己兜过底了：真到这儿也只是布局空着，不影响书架
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /** 每本书的书脊厚度（rem）—— 与「可见书目」同序：动态按字数算，统一模式一律保底。 */
+  const spineWidths = useMemo(
+    () => visible.map((book) => (spineMode === "dynamic" ? spineWidthRem(book.total_words) : SPINE_MIN_REM)),
+    [visible, spineMode],
+  );
+
+  /** 书架上这几本的 id（与「可见书目」同序）：拖拽落点、让位、跨屏翻页都按它算。 */
+  const bookIds = useMemo(() => visible.map((book) => book.id), [visible]);
+
+  /**
+   * 分屏：**先按宽度把书排成排**（这一排摆不下就换排），再按「主屏一排 / 其余每屏三排」切屏。
+   *
+   * 所以「一屏多少本」不是常量 —— 书越厚，一屏摆得越少、页数跟着变（需求点名要按总宽度重算）。
+   * 主屏第一排要先把藤条篮子那一格让出来，所以 `firstRowExtra` 给了一个保底厚度。
+   */
+  const pages = useMemo(() => {
+    const root = rackSize.root > 0 ? rackSize.root : 16;
+    const width = rackSize.width > 0 ? rackSize.width : ASSUMED_ROW_REM * root;
+    return planShelfPages(
+      packShelfRows(
+        spineWidths.map((rem) => rem * root),
+        width,
+        SPINE_GAP_REM * root,
+        SPINE_MIN_REM * root,
+      ),
+    );
+  }, [spineWidths, rackSize]);
+
+  const totalPages = pages.length;
+  const current = Math.min(page, totalPages - 1);
+  /** 这一屏的几排：主屏一排、其余三排（末尾不足已补空排，排高与挡板数都不跳） */
+  const rows = pages[current];
+
+  /**
+   * 每本书落在第几屏 —— 跨屏飞行动画要用（翻到第一本新书那一屏，其余朝对应方向飞出画外）。
+   *
+   * 算的是**分屏结果本身**（`pages` + `bookIds`），不碰 DOM：所以刚导入还没画上去的书也
+   * 算得出来（`spineRect` 那种量法对它们是空的）。
+   */
+  const pageOfBook = useMemo(() => {
+    const map = new Map<string, number>();
+    pages.forEach((pageRows, index) => {
+      for (const row of pageRows) {
+        for (const at of row) {
+          const id = bookIds[at];
+          if (id) map.set(id, index);
+        }
+      }
+    });
+    return map;
+  }, [pages, bookIds]);
+
+  // 查表要走 ref：`pageOf` 会被 ImportFlight 放进 effect 依赖里，必须是稳定引用
+  const pageOfBookRef = useRef(pageOfBook);
+  pageOfBookRef.current = pageOfBook;
+  const pageOf = useCallback((bookId: string) => pageOfBookRef.current.get(bookId) ?? 0, []);
+
+  // ── 管理模式的拖拽 ────────────────────────────────────────────────────────
+  // 指针落点的判定全靠下面这份量出来的坐标；它只在「拖起来 / 翻屏 / 布局变了」时重量
+  const slotRows = useRef<
+    { row: number; y: number; height: number; cells: { slot: number; x: number; width: number }[] }[]
+  >([]);
+  // 毛绒玩具那一格的位置：拖书经过它时兔子要跳起来拦
+  const toyBox = useRef<SpineRect | null>(null);
+  // 翻屏动画的计时器（拖拽中每翻一屏重设一次）
+  const flipTimer = useRef<number | null>(null);
+
+  /**
+   * 量下这一屏每一格的位置。
+   *
+   * 量的是 DOM（`.shelf-rack.books[data-row]` 里的 `[data-slot]`）：书脊厚薄不一、
+   * 排几本还是打包器算出来的，只有 DOM 知道真实位置。**不在指针每动一下时量** ——
+   * 那是每帧一次强制重排，几十张卡片会把拖动拖卡（与阅读页光点「不每帧渲染」同理）。
+   */
+  function measureSlots() {
+    const boxes: typeof slotRows.current = [];
+    for (const rack of Array.from(
+      document.querySelectorAll<HTMLElement>(".shelf-rack.books[data-row]"),
+    )) {
+      const box = rack.getBoundingClientRect();
+      const cells = Array.from(rack.querySelectorAll<HTMLElement>("[data-slot]"))
+        .map((cell) => {
+          const rect = cell.getBoundingClientRect();
+          return { slot: Number(cell.dataset.slot ?? -1), x: rect.x, width: rect.width };
+        })
+        .sort((a, b) => a.x - b.x);
+      boxes.push({ row: Number(rack.dataset.row ?? 0), y: box.y, height: box.height, cells });
+    }
+    boxes.sort((a, b) => a.row - b.row);
+    slotRows.current = boxes;
+
+    const toy = document.querySelector(".decor-item.toy-item");
+    if (toy instanceof HTMLElement) {
+      const rect = toy.getBoundingClientRect();
+      toyBox.current = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    } else {
+      toyBox.current = null;
+    }
+  }
+
+  // 拖拽中：屏号 / 布局 / 格子一变就重量一次（翻屏之后每一格都换了位置）
+  useLayoutEffect(() => {
+    if (!managing || !dragging) return;
+    measureSlots();
+    window.addEventListener("resize", measureSlots);
+    return () => window.removeEventListener("resize", measureSlots);
+  }, [managing, dragging, current, bookIds, flip]);
+
+  /** 落点 → 「格子序列」里的缝下标（拖书用）。 */
+  function gapIndexOf(hit: ManageHit): number {
+    const row = rows[hit.row] ?? [];
+    if (row.length === 0) return 0;
+    // 排尾那个缝 = 这一排最后一格之后
+    return hit.gap < row.length ? row[hit.gap] : row[row.length - 1] + 1;
+  }
+
+  /**
+   * 指针落在哪一格的缝上（拖拽时每动一下问一次）。
+   *
+   * 竖直方向留 24px 余量（拖到书排上下沿之外一点也算落在这一排），水平方向由
+   * `gapInRow` 按每格的中点分左右半边。**落空回 null** —— 松手落在那儿就等于取消。
+   */
+  function hitAt(x: number, y: number): ManageHit | null {
+    const near = slotRows.current;
+    if (near.length === 0) return null;
+    const slack = 24;
+    const row = near.find((box) => y >= box.y - slack && y <= box.y + box.height + slack);
+    if (!row) return null;
+    const gap = gapInRow(row.cells, x);
+    const last = row.cells[row.cells.length - 1];
+    // 缝画在「第 gap 格的左边缘」上；排尾那个缝画在最后一格的右边缘
+    const edge = gap < row.cells.length ? row.cells[gap].x : (last?.x ?? 0) + (last?.width ?? 0);
+    const toy = toyBox.current;
+    const overToy =
+      !!toy && x >= toy.x && x <= toy.x + toy.width && y >= toy.y && y <= toy.y + toy.height;
+    return { page: current, row: row.row, gap, x: edge, y: row.y, height: row.height, overToy };
+  }
+
+  // `grabBook` 要当 props 交进 `memo` 的书脊卡片（必须是稳定引用，否则每次重渲染
+  // 都会让几十张卡片白重算），所以它读的最新状态走这个 ref
+  const manageRef = useRef({ managing, selecting, ids: bookIds });
+  manageRef.current = { managing, selecting, ids: bookIds };
+
+  /**
+   * 按住一根书脊：备一个「可能要拖」的手势。
+   *
+   * 移动**超过 `DRAG_THRESHOLD_PX`** 才算真的拖起来 —— 手指抖一下、或只是想点一下，
+   * 都不该把书挪走。真的拖起来之前先 `measureSlots()`：格子的坐标只有这时候量才准。
+   */
+  const armDrag = useCallback((item: ManageDrag, event: React.PointerEvent<HTMLElement>) => {
+    // 选择模式：按下只准备勾选（拖动会让「点击勾选」抖一下就落空）
+    if (!manageRef.current.managing || manageRef.current.selecting || event.button !== 0) return;
+    const at = manageRef.current.ids.indexOf(item.id);
+    if (at < 0) return;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    function arm(move: PointerEvent) {
+      if (Math.hypot(move.clientX - startX, move.clientY - startY) < DRAG_THRESHOLD_PX) return;
+      window.removeEventListener("pointermove", arm);
+      measureSlots();
+      setDragging({ item, at });
+    }
+    function forget() {
+      window.removeEventListener("pointermove", arm);
+    }
+    window.addEventListener("pointermove", arm);
+    // 抬手 / 指针事件被系统收走：这次拖作废
+    window.addEventListener("pointerup", forget, { once: true });
+    window.addEventListener("pointercancel", forget, { once: true });
+  }, []);
+
+  /** 按住一根书脊（书脊卡片是 `memo` 的，这个回调要稳定）。 */
+  const grabBook = useCallback(
+    (book: BookRow, event: React.PointerEvent<HTMLLIElement>) =>
+      armDrag({ id: book.id, title: book.title || book.id }, event),
+    [armDrag],
+  );
+
+  /* ── 方向键排序：点一下选中一本书，再用 ← ↑ → ↓ 一位一位地挪 ────────────── */
+
+  /**
+   * 点一下选中一本书：再点同一本 = 放开（`Esc` 也是放开）。
+   *
+   * 与拖拽并行不悖：拖是「直接搬过去」，选是「先拿在手上、再用方向键微调」——
+   * 拖完也顺手选中（`BookSpine` 的 click 走这一条），接着按方向键就能挪。
+   */
+  function pickItem(bookId: string) {
+    setPicked((now) => (now === bookId ? null : bookId));
+  }
+
+  // 书脊卡片是 `memo` 的：这个回调必须是**稳定引用**，读最新的函数走 ref
+  const pickOps = useRef({ pick: pickItem });
+  pickOps.current = { pick: pickItem };
+
+  /** 点一下书脊：选中这一本（随后用方向键挪）。 */
+  const pickBook = useCallback((book: BookRow) => pickOps.current.pick(book.id), []);
+
+  /** 方向键挪一下选中的那一本：`← ↑` 往前一位、`→ ↓` 往后一位。 */
+  function nudgePicked(step: -1 | 1) {
+    if (!picked) return;
+    const nextOrder = shiftBook(order, picked, step);
+    // 挪不动（书已经在最前 / 最后）：`shiftBook` 原样还回来，这一下就当没发生（也不必写盘）
+    if (nextOrder === order) return;
+    const next: ManageLayout = { ...layout, order: nextOrder };
+    // 挪完把屏跟着翻过去（见下面那个 effect）：盯着它挪，别挪到画外
+    followPick.current = true;
+    setLayout(next);
+    void writeLayout(next, layoutHome).catch(() => {
+      // 写不进去只是下次启动回到旧布局，不值得打断用户
+    });
+  }
+
+  // 键盘那一层只订阅一次键盘：挪的动作走 ref 拿最新的闭包（与 `manageRef` 同一个理由）
+  const nudgeRef = useRef(nudgePicked);
+  nudgeRef.current = nudgePicked;
+
+  /**
+   * 松手：把拖着的那本书落到那个缝上。
+   *
+   * 落点 → 「格子序列」里的缝下标（`gapIndexOf`）→ `orderIndexAt`（抽掉这本之后算第几位）
+   * → `moveBook` 重排。
+   *
+   * **落空**（拖到墙上 / 按了 Esc / 指针不在任何一排上）什么都不做：书回原位。
+   */
+  function dropDrag(hit: ManageHit | null) {
+    const drag = dragging;
+    setDragging(null);
+    setHover(null);
+    if (!drag || !hit) return;
+    const gap = gapIndexOf(hit);
+    const next: ManageLayout = {
+      ...layout,
+      order: moveBook(order, drag.item.id, orderIndexAt(bookIds, gap, drag.item.id)),
+    };
+    setLayout(next);
+    void writeLayout(next, layoutHome).catch(() => {
+      // 写不进去只是下次启动回到旧布局，不值得打断用户
+    });
+  }
+
+  /** 右上角那把锤子：进 / 出管理模式（进出都把拖拽痕迹清干净）。 */
+  function toggleManage() {
+    const next = !managing;
+    setManaging(next);
+    // 退出管理模式时把「批量编辑」与「方向键选中的那一件」两个子状态一起收掉：
+    // 下次进来是干净的排序态
+    if (!next) {
+      setSelecting(false);
+      setSelected(new Set());
+      setBatchNotice("");
+    }
+    setPicked(null);
+    setDragging(null);
+    setHover(null);
+    setFlip(null);
+  }
+
+  /**
+   * 管理模式的开 / 关往外报一声（`App.tsx` 记着它）：去统计页看一眼再回来还是整理模式 ——
+   * 否则那一趟会把手里那把锤子弄丢（书房是从挂件页回来时重新挂载的）。
+   */
+  useEffect(() => {
+    props.onManageChange?.(managing);
+  }, [managing, props.onManageChange]);
+
+  /**
+   * 翻到指定那一屏并让书排播一下滑入动画 —— 拖拽翻屏与**导入飞行跨屏**都走它。
+   *
+   * 已经在那一屏 / 越界就什么都不做。`stamp` 只用来让同一方向的连续翻屏也重放动画。
+   */
+  function flipToPage(next: number) {
+    if (next === current || next < 0 || next >= totalPages) return;
+    setPage(next);
+    setFlip({ dir: next > current ? 1 : -1, stamp: Date.now() });
+    if (flipTimer.current !== null) window.clearTimeout(flipTimer.current);
+    flipTimer.current = window.setTimeout(() => setFlip(null), SPRING_MS);
+  }
+
+  /**
+   * 拖拽中翻屏：指针在边缘停留满 `EDGE_HOLD_MS`（或按 ← / →）**并重新计时**。
+   * 已经在头 / 尾就什么都不做（`stepPage` 会回同一个屏号）。
+   */
+  function turnPageFromDrag(step: -1 | 1) {
+    flipToPage(stepPage(current, totalPages, step));
+  }
+
+  // 卸下时别留下翻屏动画的计时器
+  useEffect(
+    () => () => {
+      if (flipTimer.current !== null) window.clearTimeout(flipTimer.current);
+    },
+    [],
+  );
+
+  /** 落点旁边要被挤扁的那两本（`scaleX(0.8)`）；松手后由 CSS 的弹性曲线恢复。 */
+  const squeezedIds = useMemo(() => {
+    if (!managing || !dragging || !hover) return new Set<string>();
+    return new Set(squeezeIds(bookIds, gapIndexOf(hover), dragging.item.id));
+  }, [managing, dragging, hover, bookIds, rows]);
+
+  /** 方向键选中的那一本叫什么（管理条上写出来）：书名。 */
+  const pickedLabel = useMemo(
+    () => (picked ? booksById.get(picked)?.title || picked : null),
+    [picked, booksById],
+  );
+
+  /**
+   * 方向键挪完「跟着挪过去」：那一本要是被挪出了这一屏，就翻到它那一屏。
+   *
+   * 分屏是 `pages` 算出来的，**挪完那一帧才有的算** —— 所以不是在按键那一下硬猜，而是
+   * 记一个一次性的记号（`followPick`），渲染后接着做。
+   */
+  useLayoutEffect(() => {
+    if (!followPick.current) return;
+    followPick.current = false;
+    if (!picked) return;
+    const target = pageOfBook.get(picked);
+    if (target !== undefined && target !== current) flipToPage(target);
+    // `pages` 必须列在依赖里：分屏是它算出来的，挪完这一帧它变了这个 effect 才会跑
+  }, [picked, pages, current, pageOfBook]);
+
+  /**
+   * 选中的那一本要是没了（书被删 / 被封印），把选中一并放开 ——
+   * 否则方向键会一直指着一本已经不在架上的书。
+   */
+  useEffect(() => {
+    if (picked && !booksById.has(picked)) setPicked(null);
+  }, [picked, booksById]);
+
+  /**
+   * 界面里是不是正开着东西（搜索遮罩 / 开书过场 / 右键菜单 / 弹窗 / 换玩具的面板 / 拖着一本书）。
+   *
+   * 开着的时候方向键不翻屏：搜索框里要留左右键移动光标（`typing` 也挡一道），
+   * 右键菜单是按指针位置浮着的 —— 翻屏会让它指着一本已经不在那儿的书；
+   * 拖拽中 ← / → 归管理模式那一层管（`BookshelfManager` 自己也订阅键盘），
+   * 两边都翻会一次跳两屏。
+   */
+  const overlayOpen = searchOpen || !!stage || !!menu || !!dialog || toyPicker || !!dragging;
+
+  /**
+   * 键盘快捷键：`Esc` 取消搜索，`⌘K` / `/` 唤起搜索，**`←` / `→` 翻屏**，
+   * 单键 **`M` 管理模式 / `S` 统计 / `A` 成就 / `G` 设置**（键位表在 `lib/shortcuts.ts`；
+   * 正在输入框里打字、或界面正开着东西时不抢）。
+   *
+   * 管理模式下点中了一件东西（`picked`）时，方向键先归它：`←` `↑` 往前一位、`→` `↓`
+   * 往后一位（书架是横着排的，上下与左右同义）、`Esc` 放开 —— **没点中东西时 `←` / `→`
+   * 仍然是翻屏**（老手感不变，`↑` / `↓` 本来就不翻屏）。
+   *
+   * 翻屏与两侧那对 `‹ ›` 走的是同一条路（`stepPage`）—— 键盘和鼠标在同一屏上不会打架。
+   * 已经在第一屏 / 最后一屏时**什么都不做、也不 `preventDefault`**，按键留给系统。
+   *
+   * 这个 effect 必须排在分屏算完之后：它要用到 `totalPages` 与 `current`。
+   */
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       // 过场动画播放中：键盘只归过场用（Esc 在那里是"返回书架"），这里一概不响应
@@ -661,6 +1571,40 @@ export default function Shelf(props: {
         setSearchOpen(true);
         return;
       }
+      // 单键快捷键：M 管理模式 / S 统计 / A 成就 / G 设置（输入框里打字时、界面开着东西时不抢）
+      const shortcut = shortcutFrom(event);
+      if (shortcut && !typing && !overlayOpen) {
+        event.preventDefault();
+        if (shortcut === "manage") toggleManage();
+        else if (shortcut === "stats") props.onOpenStats();
+        else if (shortcut === "achievements") props.onOpenAchievements();
+        else props.onOpenDesk();
+        return;
+      }
+      // 排序中点了中一件东西：方向键先归它 —— ← ↑ 往前一位、→ ↓ 往后一位，Esc 放开
+      // （书架是横着排的，上下与左右同义；输入框里打字的 ↑ ↓ 还留给输入框）
+      if (managing && picked && !typing && !overlayOpen) {
+        const nudge = nudgeStep(event.key);
+        if (nudge) {
+          event.preventDefault();
+          nudgeRef.current(nudge);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setPicked(null);
+          return;
+        }
+      }
+      // ← / →：翻屏（与两侧那对 ‹ › 同一条路）；已经在头 / 尾就什么都不做，也别吞掉按键
+      if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && !typing && !overlayOpen) {
+        const next = stepPage(current, totalPages, event.key === "ArrowRight" ? 1 : -1);
+        if (next !== current) {
+          event.preventDefault();
+          setPage(next);
+        }
+        return;
+      }
       if (event.key === "/" && !typing && !searchOpen) {
         event.preventDefault();
         setSearchOpen(true);
@@ -668,13 +1612,11 @@ export default function Shelf(props: {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-    // searchOpen 一变就重新订阅，闭包里的 cancelSearch 才不会过期；stage 同理
-  }, [searchOpen, stage]);
-
-  // 分屏：一屏 PAGE_SIZE 本；总屏数至少是 1
-  const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
-  const current = Math.min(page, totalPages - 1);
-  const shown = visible.slice(current * PAGE_SIZE, current * PAGE_SIZE + PAGE_SIZE);
+    // 一变就重新订阅，闭包才是新的：searchOpen / stage / overlayOpen 管「界面开着什么」，
+    // totalPages / current 管翻屏该往哪儿翻，managing 管 M 那把锤子是开还是关，
+    // picked 管方向键是「挪东西」还是「翻屏」
+    // （cancelSearch 只用三个 setState，不会过期，不必列；nudgePicked 走 nudgeRef）
+  }, [overlayOpen, searchOpen, stage, totalPages, current, managing, picked]);
 
   /** 指针进入窗口左右两侧的窄带就亮出翻页箭头，回到中间就收起来。 */
   function trackPointer(event: React.MouseEvent) {
@@ -686,26 +1628,47 @@ export default function Shelf(props: {
   }
 
   /**
-   * 「＋」：让系统文件浏览器挑电子书 —— 可以点一个文件、多选几个，或者直接选文件夹，
+   * 藤条篮子：让系统文件浏览器挑电子书 —— 可以点一个文件、多选几个，或者直接选文件夹，
    * 然后把每个路径交给内核 `import`（内核一次吃一个文件或目录）。
+   *
+   * `mode` 只在 Windows / Linux 上有意义：那边先弹一个小菜单问「文件还是文件夹」，挑完才
+   * 走到这里（macOS 一按就开面板，壳层会把 `mode` 忽略掉）。它顺手把那个小菜单收掉 ——
+   * 点完某一项它就该没了。
    */
-  async function doImport() {
+  async function doImport(mode: ImportPickMode = "files") {
+    setPickAnchor(null);
     setImporting(true);
     setImportNotice("");
     setImportError("");
     try {
-      const paths = await pickImportPaths();
+      const paths = await pickImportPaths(mode);
       // 用户点了取消：什么都不做
       if (paths.length === 0) {
         return;
       }
-      // 多选/多目录时逐个导入，再把回执合并成一行
+      // 起飞点要在导入**之前**量下来：导完书架会重排（新书插在篮子右边、篮子自己的位置也可能挪），
+      // 那时再量就不是用户刚才点的那只篮子了
+      const box = basketRef.current?.getBoundingClientRect() ?? null;
+      const origin: SpineRect | null = box
+        ? { x: box.x, y: box.y, width: box.width, height: box.height }
+        : null;
+      // 这一批之前有哪些书：导完拿它比出「刚进来的那几本」（书 id 是正文哈希，稳定）
+      const before = new Set(props.books.map((book) => book.id));
+      // 多选/多目录时逐个导入，再把回执合并成一行。
+      // 一个文件夹里可能几十本（内核一次吃一个路径），转换 + 建索引都要时间，
+      // 所以**每个路径开始前先把进度写出去**：用户看得见它在动，而不是以为卡死了。
       let scanned = 0;
       let added = 0;
       let duplicates = 0;
       let failed = 0;
       const unlocked: string[] = [];
-      for (const path of paths) {
+      for (const [index, path] of paths.entries()) {
+        const name = path.split(/[/\\]/).pop() ?? path;
+        setImportNotice(
+          paths.length > 1
+            ? `正在导入第 ${index + 1}/${paths.length} 个：${name}`
+            : `正在导入：${name}`,
+        );
         const result = await importBooks(path);
         scanned += result.scanned;
         added += result.imported.length;
@@ -719,8 +1682,15 @@ export default function Shelf(props: {
           (failed > 0 ? ` · 失败 ${failed}` : "") +
           (unlocked.length > 0 ? ` · 🏆 ${unlocked.join("、")}` : ""),
       );
-      // 书架上多书了，让外层重新同步
-      props.onSync();
+      // 书架上多书了，让外层重新同步 —— 顺便把刷新后的书单拿回来：
+      // 飞行动画要知道这几本新书各自落在哪一格（见 components/ImportFlight.tsx）
+      const fresh = await props.onSync();
+      const arrived = fresh.filter((book) => !before.has(book.id));
+      // 新书按内核给的顺序接在最后（`mergeOrder` 会在渲染时把它们并进 `order`）
+      // 量到了篮子、开关也开着、并且这回真的多了书 —— 才放这一场
+      if (importFlight && origin && arrived.length > 0) {
+        setFlight({ books: arrived, origin });
+      }
     } catch (err) {
       setImportError(String(err));
     } finally {
@@ -729,30 +1699,14 @@ export default function Shelf(props: {
   }
 
   /**
-   * 点开一本书：**读过的直接续读，没读过的先放一遍「抽书 → 翻封面」的过场**。
-   *
-   * 续读的判据就是"内核里有没有进度"：`current_line > 0` 或 `last_read` 有值 ——
-   * 一行 if 判完，不去猜"这是不是第一次打开"。
-   */
-  function openBook(book: BookRow, origin: SpineRect) {
-    // 续读（有进度）就直接进阅读页，不看过场 —— 一行判完
-    if (hasProgress(book)) {
-      props.onOpen(book);
-      return;
-    }
-    // 首次打开：方案（配色 + 中央那两个字）是本地算出来的、零延迟，先把过场放起来
-    const spec = generatedCover(book.title);
-    setStage({ book, spec, image: null, origin });
-    // 同时去壳层问一句有没有真封面图 / 上次缓存的方案（不挡动画）
-    void resolveCover(book, spec);
-  }
-
-  /**
    * 后台问壳层要这本书的封面：有本地封面图就用图，有缓存过的方案就用缓存，
    * 都没有就把这次算出来的方案写进 `app_data_dir/covers/<id>.json` 备下次用。
    * 整个过程出错都不影响过场继续放 —— 封面只是锦上添花。
+   *
+   * `useCallback` 是因为 `openBook` 要用它，而 `openBook` 又是书脊卡片的 props
+   * （卡片包了 `memo`，回调得是稳定引用才不白重算）。
    */
-  async function resolveCover(book: BookRow, fallback: CoverSpec) {
+  const resolveCover = useCallback(async (book: BookRow, fallback: CoverSpec) => {
     try {
       const info = await bookCover(book.id, book.file_path);
       const cached = parseCoverSpec(info.spec);
@@ -765,19 +1719,82 @@ export default function Shelf(props: {
     } catch {
       // 问不到就用本地生成的那套，不影响看书
     }
+  }, []);
+
+  /**
+   * 点开一本书：**读过的直接续读，没读过的先放一遍「抽书 → 翻封面」的过场**。
+   *
+   * 续读的判据就是"内核里有没有进度"：`current_line > 0` 或 `last_read` 有值 ——
+   * 一行 if 判完，不去猜"这是不是第一次打开"。
+   */
+  const openBook = useCallback(
+    (book: BookRow, origin: SpineRect) => {
+      // 续读（有进度）就直接进阅读页，不看过场 —— 一行判完
+      if (hasProgress(book)) {
+        props.onOpen(book);
+        return;
+      }
+      // 首次打开：方案（配色 + 中央那两个字）是本地算出来的、零延迟，先把过场放起来
+      const spec = generatedCover(book.title);
+      setStage({ book, spec, image: null, origin });
+      // 同时去壳层问一句有没有真封面图 / 上次缓存的方案（不挡动画）
+      void resolveCover(book, spec);
+    },
+    [props.onOpen, resolveCover],
+  );
+
+  /** 右键 / 长按弹出的菜单：回调要稳定（见 `BookSpine` 的 `memo`）。 */
+  const openMenu = useCallback(
+    (book: BookRow, x: number, y: number) => setMenu({ book, x, y }),
+    [],
+  );
+
+  /**
+   * 跳到第 N 屏（输入框里是 1-based；越界夹回范围，清空或非数字就不动）。
+   *
+   * 只在书超过 `JUMP_MIN_PAGES` 屏时才出现 —— 三屏以内用两侧箭头点两下就到了。
+   */
+  function jumpToPage(event: React.FormEvent) {
+    event.preventDefault();
+    const n = Number.parseInt(jumpText, 10);
+    if (!Number.isFinite(n)) return;
+    setPage(Math.max(0, Math.min(totalPages - 1, n - 1)));
+    setJumpText("");
   }
 
-  const clock = now.toLocaleTimeString("zh-CN", { hour12: false });
-  const date = now.toLocaleDateString("zh-CN", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    weekday: "long",
-  });
+  /**
+   * 「跳到第几屏」那个小表单：**书超过 `JUMP_MIN_PAGES` 屏才用得上**。
+   *
+   * 同一个表单挂在两处（主屏挂在墙上那一栏的右端、其余屏挂在右上角浮层里），所以做成变量 ——
+   * 别做成组件：写在 render 里的组件每次渲染都是新类型，输入框会被重挂、打字打到一半就丢焦点。
+   */
+  const jumpForm =
+    totalPages >= JUMP_MIN_PAGES ? (
+      <form className="page-jump" onSubmit={jumpToPage}>
+        <input
+          type="number"
+          min={1}
+          max={totalPages}
+          value={jumpText}
+          // 空着就把当前屏号当占位
+          placeholder={String(current + 1)}
+          aria-label="跳到第几屏"
+          title={`跳到第几屏：1–${totalPages}，回车（或点「跳转」）`}
+          onChange={(event) => setJumpText(event.currentTarget.value)}
+        />
+        <span className="jump-total">/ {totalPages} 屏</span>
+        <button type="submit" className="jump-go" title="跳到这一屏">
+          跳转
+        </button>
+      </form>
+    ) : null;
 
   return (
     <main
-      className={`container study ${sky}`}
+      // main = 主屏（书房全景：窗 + 挂件栏 + 摆件栏 + 一排书）；shelves = 第二屏起（整面书架，只有书）
+      className={`container study ${sky}${current === 0 ? " main" : " shelves"}${
+        managing ? " manage" : ""
+      }${selecting ? " select-mode" : ""}`}
       onMouseMove={trackPointer}
       onMouseLeave={() => setEdge("")}
     >
@@ -797,74 +1814,55 @@ export default function Shelf(props: {
         <span className="window-bar h" />
       </div>
 
-      {/* 墙上那一栏：日历（统计）、数字时钟、透明玻璃徽章盒（成就） */}
+      {/* 墙上那一栏：三枚便利贴（统计 / 成就 / 设置）、数字时钟、右上角那排小圆钮。
+          便利贴的文案是生活化的（「日记」「勋章」「调一调」），真名与快捷键写在悬停提示里；
+          长什么样、怎么拖、怎么撕下 / 贴回全在 `components/StickyNoteNav.tsx` */}
       <div className="study-wall">
-        <Widget kind="calendar" icon="📅" label="统计" onClick={props.onOpenStats} />
-        {/* 数字时钟：和左右两个挂件并排的一格，纯展示、不可点 */}
-        <div className="widget clock" title="当前系统时间">
-          <span className="clock-time">{clock}</span>
-          <span className="clock-date">{date}</span>
-        </div>
-        <Widget
-          kind="badge-box"
-          icon="🏅"
-          label="成就"
-          onClick={props.onOpenAchievements}
+        <StickyNoteNav
+          notes={[
+            {
+              id: "stats",
+              text: "日记",
+              realName: "统计",
+              shortcut: "stats",
+              onClick: props.onOpenStats,
+            },
+            {
+              id: "achievements",
+              text: "勋章",
+              realName: "成就",
+              shortcut: "achievements",
+              onClick: props.onOpenAchievements,
+            },
+            {
+              id: "settings",
+              text: "调一调",
+              realName: "设置与数据",
+              shortcut: "settings",
+              onClick: props.onOpenDesk,
+            },
+          ]}
         />
-        {/* 齿轮：挂在成就旁边的小物件（无底色 / 边框 / 阴影），点它开设置面板 */}
-        <button
-          type="button"
-          className="gear-token"
-          title="设置与数据"
-          onClick={props.onOpenDesk}
-        >
-          <svg className="gear-token-icon" viewBox="0 0 40 40" aria-hidden="true">
-            <defs>
-              {/* 黄铜渐变：上亮下暗，做出金属质感 */}
-              <linearGradient id="brass-gear" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stopColor="#f2d18b" />
-                <stop offset="0.55" stopColor="#c99a45" />
-                <stop offset="1" stopColor="#8a5a24" />
-              </linearGradient>
-            </defs>
-            {/* 8 个齿：把一个小方块绕圆心转一圈 */}
-            {Array.from({ length: 8 }, (_, index) => (
-              <rect
-                key={index}
-                x="17"
-                y="0.5"
-                width="6"
-                height="8.5"
-                rx="1.6"
-                fill="url(#brass-gear)"
-                transform={`rotate(${index * 45} 20 20)`}
-              />
-            ))}
-            {/* 齿轮本体 */}
-            <circle cx="20" cy="20" r="13" fill="url(#brass-gear)" />
-            <circle
-              cx="20"
-              cy="20"
-              r="13"
-              fill="none"
-              stroke="rgba(255, 240, 200, 0.4)"
-              strokeWidth="1"
-            />
-            {/* 中心孔 */}
-            <circle cx="20" cy="20" r="4.6" fill="#2a1c10" />
-            <circle
-              cx="20"
-              cy="20"
-              r="4.6"
-              fill="none"
-              stroke="rgba(255, 230, 180, 0.35)"
-              strokeWidth="1"
-            />
-          </svg>
-          <span className="gear-token-label">设置</span>
-        </button>
-        {/* 右上角工具栏：重新同步 / 清空缓存 / 放大镜（搜索打开时变成关闭的 ✕） */}
+        {/* 数字时钟：和三枚便利贴并排的一格，纯展示、不可点（秒针只在它自己身上跳） */}
+        <Clock />
+        {/* 书超过三屏时，墙上右上角再挂一个「跳到第几屏」（贴在同步那些小圆钮左边）；
+            只在主屏挂 —— 别的屏整栏都收着，那一份由右上角的浮层给 */}
+        {current === 0 ? jumpForm : null}
+        {/* 右上角工具栏：管理模式（锤子）/ 重新同步 / 清空缓存 / 放大镜（搜索打开时变成关闭的 ✕） */}
         <div className="study-tools">
+          <button
+            type="button"
+            className={`icon-button manage-toggle${managing ? " active" : ""}`}
+            title={
+              managing
+                ? `完成（退出管理模式，布局已经存好了 · 快捷键 ${shortcutKey("manage")}）`
+                : `管理模式：拖着书排序、点一下选中再用方向键挪（快捷键 ${shortcutKey("manage")}）`
+            }
+            aria-pressed={managing}
+            onClick={toggleManage}
+          >
+            🔨
+          </button>
           <button
             type="button"
             className="icon-button"
@@ -896,109 +1894,239 @@ export default function Shelf(props: {
 
       {props.error ? <p className="error">{props.error}</p> : null}
 
-      {/* 「＋」导入的回执：新增 / 重复 / 失败 / 新解锁的成就 */}
+      {/* 藤条篮子导入的回执：新增 / 重复 / 失败 / 新解锁的成就 */}
       {importNotice ? <p className="notice">{importNotice}</p> : null}
       {importError ? <p className="error">{importError}</p> : null}
+      {/* 批量编辑的进度与回执（改书名 / 标记 / 删除都写这一行） */}
+      {batchNotice ? <p className="notice">{batchNotice}</p> : null}
       {/* 右键菜单里的操作（删除 / 标记已读）出错时也走这里 */}
       {actionError ? <p className="error">{actionError}</p> : null}
 
-      {/* 上层架子：放装饰（留声机 / 竖着的黑胶唱片 / 收音机 / 毛绒玩具）；只有玩具能点 */}
+      {/* 上层架子：放装饰（一叠黑胶 / 留声机 / 收音机 / 毛绒玩具 / 台灯）；只有玩具能点 */}
       <section className="shelf-rack decor">
         <ul className="decor-shelf">
-          {/* 台灯：白天是件摆设，天一黑自己亮起来，往架子下洒一小块暖光 */}
+          {/* 黑胶唱片：五张侧着摞成一叠，斜靠在**右边**那台留声机木箱的左脸上。
+              它排在留声机**前面**（DOM 顺序 = 画的顺序），所以留声机的木箱正好压住
+              最里面那张的顶端 —— 「倚」而不是「挨」（样式见 App.css 的 .vinyl） */}
+          <li className="decor-item vinyl" title="黑胶唱片 ×5（以后会加入音频播放）">
+            <span className="v-disc" />
+            <span className="v-disc" />
+            <span className="v-disc" />
+            <span className="v-disc" />
+            <span className="v-disc" />
+          </li>
+          {/* 留声机：台阶式木箱（顶板上平躺着一张黑胶 + 一根弯脖子唱臂，右侧面一支摇柄）+
+              从箱体左上角升起来、拐个弯再张开成花瓣口的一支大铜喇叭。
+              零件顺序就是遮挡顺序，坐标全在 App.css 的 .g-* 一节里逐件量过 */}
+          <li className="decor-item gramophone" title="留声机（以后会加入音频播放）">
+            <span className="g-foot" />
+            <span className="g-foot" />
+            <span className="g-plinth" />
+            <span className="g-step" />
+            <span className="g-base" />
+            <span className="g-plaque" />
+            <span className="g-top" />
+            <span className="g-disc" />
+            <span className="g-stud" />
+            <span className="g-crank-shaft" />
+            <span className="g-crank-arm" />
+            <span className="g-crank-grip" />
+            <span className="g-arm-stem" />
+            <span className="g-arm-head" />
+            <span className="g-arm-pivot" />
+            <span className="g-collar" />
+            <span className="g-collar-tab" />
+            <span className="g-pipe" />
+            <span className="g-collar-ring" />
+            <span className="g-flare" />
+            <span className="g-elbow" />
+            <span className="g-ferrule" />
+            <span className="g-mouth" />
+          </li>
+          {/* 收音机：圆角木壳 +（左）横百叶的喇叭格栅 +（右）表盘、四个铜旋钮 + 四只木脚。
+             里面那几个小件（旋钮、小铭牌）的位置在 App.css 里按「第几个孩子」排 */}
+          <li className="decor-item radio" title="收音机（以后会加入音频播放）">
+            <span className="r-foot" />
+            <span className="r-foot" />
+            <span className="r-case" />
+            <span className="r-face" />
+            <span className="r-grille" />
+            <span className="r-mark" />
+            <span className="r-mark" />
+            <span className="r-mark" />
+            <span className="r-dial">
+              <span className="r-hand" />
+              <span className="r-hand" />
+            </span>
+            <span className="r-knob r-knob-big" />
+            <span className="r-knob" />
+            <span className="r-knob" />
+            <span className="r-knob" />
+            <span className="r-side-knob" />
+          </li>
+          {/* 毛绒玩具：**架子上可以同时摆几只**（兔子 / 猫头鹰 / 乌龟，每只各自由用户决定放不放）。
+              点这一排玩具（一只也没摆时点那个「＋」空位）弹出面板调。
+              摆法记在本机 localStorage（见 lib/toyPrefs），所以下次打开还是你摆的样子 */}
+          <li
+            // 管理模式：玩偶进入「看着你摆书」的状态（兔子抬头张望 / 乌龟缩头 / 猫头鹰左右张望，见 CSS）；
+            // 拖着的书经过它头顶时，兔子会跳起来拦一下（需求：拖拽经过玩偶时兔子尝试跳跃拦截）
+            className={`decor-item toy-item${managing ? " manage-look" : ""}${
+              hover?.overToy ? " intercept" : ""
+            }`}
+            ref={toyRef}
+          >
+            {/* 摆着的几只并排站（CSS 里让相邻两只轻轻搭上一点，省地方也像挤在一起的玩具）；
+                一只也没有时留一个虚线空位，不然这个入口就没了 */}
+            <button
+              type="button"
+              className="toy-button"
+              title={
+                placed.length
+                  ? `毛绒玩具：${placed.map((item) => item.label).join("、")}（点一下收放）`
+                  : "摆上毛绒玩具"
+              }
+              aria-expanded={toyPicker}
+              onClick={() => setToyPicker((open) => !open)}
+            >
+              <span
+                className="toy-row"
+                // 相邻两只之间的间距（rem）—— 面板里那根滑杆一拉，这里跟着变（CSS 见 .toy-row .plush + .plush）
+                style={{ "--toy-gap": `${toyGap}rem` } as CSSProperties}
+              >
+                {placed.map((item) => (
+                  <Plush key={item.id} id={item.id} label={item.label} />
+                ))}
+                {placed.length === 0 ? (
+                  <span className="toy-empty" aria-hidden="true">
+                    ＋
+                  </span>
+                ) : null}
+              </span>
+            </button>
+            {toyPicker ? (
+              <ToyPicker
+                toys={toys}
+                gap={toyGap}
+                placedCount={placed.length}
+                onToggle={flipToy}
+                onGap={applyToyGap}
+              />
+            ) : null}
+          </li>
+          {/* 台灯**摆在最右边**：白天是件摆设，天一黑自己亮起来，往架子下洒一小块暖光
+              （CSS 里给了 `margin-left: auto`，剩下的空间全留在它左边 —— 所以它贴着这一排的右端） */}
           <li className="decor-item lamp" title="台灯（天黑自动点亮）">
             <span className="lamp-shade" />
             <span className="lamp-bulb" />
             <span className="lamp-stem" />
             <span className="lamp-base" />
           </li>
-          <li className="decor-item gramophone" title="留声机（以后会加入音频播放）">
-            <span className="g-horn" />
-            <span className="g-arm" />
-            <span className="g-base" />
-          </li>
-          <li className="decor-item vinyl" title="黑胶唱片（以后会加入音频播放）">
-            <span className="v-label" />
-            <span className="v-hole" />
-          </li>
-          <li className="decor-item radio" title="收音机（以后会加入音频播放）">
-            <span className="r-grille" />
-            <span className="r-knobs">
-              <span className="r-knob" />
-              <span className="r-knob" />
-            </span>
-          </li>
-          {/* 毛绒玩具：点它弹出切换面板（5 种动物），选中的那个记在本机 localStorage */}
-          <li className="decor-item toy-item" ref={toyRef}>
-            <button
-              type="button"
-              className="toy-button"
-              title={`毛绒玩具：${activeToy.label}（点一下换一只）`}
-              aria-haspopup="menu"
-              aria-expanded={toyPicker}
-              onClick={() => setToyPicker((open) => !open)}
-            >
-              <Plush id={activeToy.id} label={activeToy.label} />
-            </button>
-            {toyPicker ? (
-              <div className="toy-picker" role="menu" aria-label="换一只毛绒玩具">
-                {TOYS.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    role="menuitem"
-                    className={`toy-choice${item.id === toy ? " active" : ""}`}
-                    title={item.label}
-                    aria-label={item.label}
-                    onClick={() => {
-                      chooseToy(item.id);
-                      setToyPicker(false);
-                    }}
-                  >
-                    <Plush id={item.id} />
-                  </button>
-                ))}
-              </div>
+        </ul>
+      </section>
+
+      {/* 书排：主屏只有一排（头一格是藤条篮子），第二屏起三排；每排下面都垫一块白色挡板（CSS 的 ::after） */}
+      {rows.map((row, index) => (
+        <section
+          className={`shelf-rack books${flip ? (flip.dir > 0 ? " turn-next" : " turn-prev") : ""}`}
+          // 拖拽判定按它认「第几排」（见 measureSlots）
+          data-row={managing ? index : undefined}
+          key={index}
+        >
+          <ul
+            // dynamic / uniform 决定每格是「按算出来的厚度」还是「等宽平分」（见 App.css）
+            className={`shelf ${spineMode}${stage ? " transitioning" : ""}`}
+            // 第一排量一次宽度就够（几排一样宽）：它决定一排放得下几本
+            ref={index === 0 ? rackRef : undefined}
+          >
+            {/* 藤条篮子只摆在主屏第一排的头一格：篮子里插着一本书、几张残页探出来 ——
+                它就是书房的入口（点它选文件导入），后面的屏是纯书架。
+                它也占一格，宽度给保底那一档（--spine-w），与书脊共用同一套格子样式 */}
+            {index === 0 && current === 0 ? (
+              <li
+                className="spine-card add-slot"
+                style={{ "--spine-w": `${SPINE_MIN_REM}rem` } as CSSProperties}
+              >
+                <button
+                  type="button"
+                  className="add-book"
+                  title="导入电子书"
+                  aria-label={importing ? "正在导入电子书" : "导入电子书"}
+                  onClick={() => {
+                    // Windows / Linux：先问一句「文件还是文件夹」（那两个平台的原生对话框
+                    // 不能同框多选，见 ImportPickMenu）；macOS 一按就开面板，与从前一样。
+                    const box = basketRef.current?.getBoundingClientRect();
+                    if (pickerModes.length > 1 && box) {
+                      setPickAnchor({
+                        left: box.left,
+                        top: box.top,
+                        right: box.right,
+                        height: box.height,
+                      });
+                      return;
+                    }
+                    void doImport();
+                  }}
+                  disabled={importing}
+                >
+                  {/* 藤条篮子（纯装饰）：先在后沿挂上提手，再插进那本书与几张残页，
+                      最后盖上篮身与收边 —— 后画的挡住先画的，看着才是「从篮口探出来」 */}
+                  <span className="basket" aria-hidden="true" ref={basketRef}>
+                    <span className="bk-handle" />
+                    <span className="bk-book" />
+                    <span className="bk-slip bk-slip-a" />
+                    <span className="bk-slip bk-slip-b" />
+                    <span className="bk-slip bk-slip-c" />
+                    <span className="bk-body" />
+                    <span className="bk-rim" />
+                  </span>
+                  {/* 这行小字平时藏着，鼠标移上去（或正在导入）才浮出来 —— 它其实是个按钮 */}
+                  <span className="add-hint" aria-hidden="true">
+                    {importing ? "导入中…" : "导入电子书"}
+                  </span>
+                </button>
+              </li>
             ) : null}
-          </li>
-        </ul>
-      </section>
-
-      {/* 下层架子：书都放在这一层，头一格是「＋」空书位 */}
-      <section className="shelf-rack books">
-        <ul className={`shelf${stage ? " transitioning" : ""}`}>
-          <li className="spine-card add-slot">
-            <button
-              type="button"
-              className="add-book"
-              title="导入电子书"
-              onClick={() => void doImport()}
-              disabled={importing}
-            >
-              <span className="add-plus" aria-hidden="true">
-                ＋
-              </span>
-              <span className="add-label">{importing ? "导入中…" : "导入"}</span>
-            </button>
-          </li>
-          {shown.map((book) => (
-            <BookSpine
-              key={book.id}
-              book={book}
-              onOpen={openBook}
-              onMenu={(target, x, y) => setMenu({ book: target, x, y })}
-              highlight={highlightIds.includes(book.id)}
-              pinned={pinned.includes(book.id)}
-              limited={deadlines[book.id] ?? null}
-              pulling={stage?.book.id === book.id}
-            />
-          ))}
-        </ul>
-      </section>
-
+            {row.map((at) => {
+              const book = visible[at];
+              if (!book) return null;
+              const width = spineWidths[at] ?? SPINE_MIN_REM;
+              return (
+                <BookSpine
+                  key={book.id}
+                  book={book}
+                  width={width}
+                  depth={spineDepth(width)}
+                  // 书名用「标题（没有就退回 id，与书脊上写的那串一致）」算字号
+                  titleFont={spineTitleFontRem(book.title || book.id)}
+                  unknown={!(book.total_words > 0)}
+                  onOpen={openBook}
+                  onMenu={openMenu}
+                  highlight={highlightIds.includes(book.id)}
+                  pinned={pinned.includes(book.id)}
+                  limited={deadlines[book.id] ?? null}
+                  pulling={stage?.book.id === book.id}
+                  // 管理模式：这一格的下标、压扁 / 留空的状态，以及「按下准备拖」
+                  slot={at}
+                  managing={managing}
+                  squeezed={squeezedIds.has(book.id)}
+                  emptied={dragging?.item.id === book.id}
+                  onGrab={grabBook}
+                  // 方向键排序选中的就是这一本
+                  picked={picked === book.id}
+                  onPick={pickBook}
+                  // 批量编辑：书脊右上角出现勾选圈，点一下切换（这时不拖、不开书）
+                  selecting={selecting}
+                  selected={selected.has(book.id)}
+                  onToggleSelect={toggleSelect}
+                />
+              );
+            })}
+          </ul>
+        </section>
+      ))}
       {props.books.length === 0 ? (
         <p className="dim empty-hint">
-          书架是空的 —— 点书架上的「＋」导入电子书，或者点右上角的 ⟳ 重新同步。
+          书架是空的 —— 点书架左边那只藤条篮子导入电子书，或者点右上角的 ⟳ 重新同步。
         </p>
       ) : null}
       {props.books.length > 0 && visible.length === 0 ? (
@@ -1011,6 +2139,21 @@ export default function Shelf(props: {
         </p>
       ) : null}
 
+      {/* 第二屏起右上角浮一枚「回到主屏」；跳屏输入框在有四屏以上时跟着它一起出现 */}
+      {current > 0 ? (
+        <div className="shelf-nav">
+          <button
+            type="button"
+            className="home-button"
+            title="回到主屏（窗 + 挂件 + 摆件 + 最上面那一排书）"
+            onClick={() => setPage(0)}
+          >
+            ⌂ 回到主屏
+          </button>
+          {jumpForm}
+        </div>
+      ) : null}
+
       {/* 齿轮已挪到右上角、挂在成就旁边（见 .study-wall），这里不再有右下角胶囊 */}
 
       {/* 翻页箭头：书多于一屏时，指针贴到哪一侧就显示哪一侧（搜索时让位） */}
@@ -1018,7 +2161,7 @@ export default function Shelf(props: {
         <button
           type="button"
           className="page-arrow left"
-          title="上一屏"
+          title="上一屏（←）"
           onClick={() => setPage(current - 1)}
         >
           ‹
@@ -1028,11 +2171,44 @@ export default function Shelf(props: {
         <button
           type="button"
           className="page-arrow right"
-          title="下一屏"
+          title="下一屏（→）"
           onClick={() => setPage(current + 1)}
         >
           ›
         </button>
+      ) : null}
+
+      {/* 管理模式那一层：管理条（完成 / 批量编辑 / 选中的那一本）+ 拖书的浮起卡片 + 落点指示线 +
+          边缘停留 0.3s 的翻屏环。它只做交互，书的先后由 lib/shelfManage.ts 的纯函数算 */}
+      {managing ? (
+        <BookshelfManager
+          drag={dragging ? dragging.item : null}
+          hitAt={hitAt}
+          onHover={setHover}
+          onDrop={dropDrag}
+          onTurn={turnPageFromDrag}
+          page={{ current, total: totalPages }}
+          // 布局存在哪儿（内核 / 本机）：管理条上会写出来，老内核时用户能看出区别
+          home={layoutHome}
+          onDone={toggleManage}
+          // 方向键排序：点中了一本时管理条上写出来，并给一枚「取消选中」
+          pickedLabel={pickedLabel}
+          onClearPick={() => setPicked(null)}
+          // 批量编辑（选择子状态）：勾几本 → 批量改书名 / 改阅读状态 / 删除
+          selecting={selecting}
+          selectedCount={selectedBooks.length}
+          totalBooks={ordered.length}
+          canEditMeta={canEditMeta}
+          canFinish={canFinish}
+          canRemove={canRemove}
+          onToggleSelecting={toggleSelecting}
+          onSelectAll={selectAll}
+          onClearSelection={clearSelection}
+          // 两个有二次确认/表单的动作先开弹窗，真正的数据操作在下面的弹窗确认后才跑
+          onBatchRename={() => setDialog({ kind: "batchRename" })}
+          onMarkFinished={(finished) => void batchMarkFinished(finished)}
+          onBatchDelete={() => setDialog({ kind: "batchDelete" })}
+        />
       ) : null}
 
       {/* 搜索遮罩：铺满整个书架区域并把它模糊掉；输入框从顶部滑下 */}
@@ -1091,7 +2267,12 @@ export default function Shelf(props: {
         <BookStatsDialog book={dialog.book} onClose={() => setDialog(null)} />
       ) : null}
       {dialog?.kind === "props" ? (
-        <BookPropsDialog book={dialog.book} onClose={() => setDialog(null)} />
+        <BookPropsDialog
+          book={dialog.book}
+          canEdit={canEditMeta}
+          onSave={(meta) => saveMeta(dialog.book, meta)}
+          onClose={() => setDialog(null)}
+        />
       ) : null}
       {dialog?.kind === "delete" ? (
         <ConfirmDeleteDialog
@@ -1105,10 +2286,35 @@ export default function Shelf(props: {
         <LimitDialog
           book={dialog.book}
           current={deadlines[dialog.book.id] ?? null}
-          today={localDay(now)}
+          today={localDay(new Date())}
           busy={working}
           onSave={(day) => void saveLimit(dialog.book, day)}
           onClear={() => void saveLimit(dialog.book, "")}
+          onClose={() => setDialog(null)}
+        />
+      ) : null}
+
+      {/* 批量编辑的两个弹窗：预览用的样板取选中的第一本（改书名是「多条对多条」，没法逐本预览） */}
+      {dialog?.kind === "batchRename" ? (
+        <BatchRenameDialog
+          count={selectedBooks.length}
+          sample={
+            selectedBooks.length > 0
+              ? selectedBooks[0].title || selectedBooks[0].id
+              : null
+          }
+          busy={working}
+          onApply={(rule) => void batchRename(rule)}
+          onClose={() => setDialog(null)}
+        />
+      ) : null}
+      {dialog?.kind === "batchDelete" ? (
+        <ConfirmDeleteDialog
+          title={`删除选中的 ${selectedBooks.length} 本`}
+          message={`确定要把选中的 ${selectedBooks.length} 本书移走吗？`}
+          note="删掉的只是书目与转换后的正文；阅读时长与成就会保留，但书架布局里的位置会一起消失。"
+          busy={working}
+          onConfirm={() => void batchDelete()}
           onClose={() => setDialog(null)}
         />
       ) : null}
@@ -1121,7 +2327,9 @@ export default function Shelf(props: {
           spec={stage.spec}
           image={stage.image}
           origin={stage.origin}
-          toy={<Plush id={activeToy.id} />}
+          // 跳进书页里的是**架子上摆着的第一只**（一只也没摆就用兔子 —— 它在封印提示里
+          // 本来就是这本书的「藏家」，过场里露个脸不算冒犯）
+          toy={<Plush id={placed[0]?.id ?? TOYS[0].id} />}
           onDone={() => {
             // 先把书记下来再清过场：清完 stage 就没了
             const opened = stage.book;
@@ -1141,6 +2349,31 @@ export default function Shelf(props: {
         />
       ) : null}
       {toast ? <SealToast text={toast} onDone={() => setToast("")} /> : null}
+
+      {/* 「＋」在 Windows / Linux 上先弹的两项（那两地的原生对话框不能文件与文件夹同框）；
+          macOS 一按就开面板，这一层永远不出现 */}
+      {pickAnchor ? (
+        <ImportPickMenu
+          anchor={pickAnchor}
+          onPick={(mode) => void doImport(mode)}
+          onClose={() => setPickAnchor(null)}
+        />
+      ) : null}
+
+      {/* 导入飞行动画：刚进来的书从藤条篮子一本本飞上架（节奏见 lib/importFlight.ts）。
+          这一层只是给眼睛看的 —— 书在飞之前就已经在架上了，飞完就把自己摘掉 */}
+      {flight ? (
+        <ImportFlight
+          books={flight.books}
+          origin={flight.origin}
+          resolveTarget={spineRect}
+          // 跨屏飞行：这批书落在哪一屏、书架这会儿在第几屏、以及「请翻到那一屏」
+          pageOf={pageOf}
+          page={current}
+          onTurn={flipToPage}
+          onDone={() => setFlight(null)}
+        />
+      ) : null}
     </main>
   );
 }

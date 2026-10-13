@@ -1,18 +1,34 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { statsReport } from "../lib/core";
-import { HEATMAP_CHARS, formatHours, heatLabel } from "../lib/format";
-import type { StatsReport } from "../lib/types";
+import { HEATMAP_CHARS, duration } from "../lib/format";
+import { BACK_KEY_LABEL } from "../lib/shortcuts";
+import {
+  bookShare,
+  durationWords,
+  goalPercent,
+  goalSentence,
+  heatPlainLabel,
+  nightSentence,
+  streakSentence,
+  todayHeadline,
+} from "../lib/statsText";
+import type { HeatCell, StatsReport } from "../lib/types";
 
 /** Heatmap rows are weekdays, Monday first (`date.weekday()` order). */
 const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
 
 /**
- * The statistics page: the very report `werd stats` renders.
+ * The statistics page: the very report the core renders -- only this time it
+ * is written on a page of the notebook instead of printed as a table.
  *
- * Nothing is recomputed here -- `statsReport()` returns `stats.build_report`, the
- * same dict `werd stats --json` prints, so the totals, the streak, the heatmap and
- * the terminal can never disagree.
+ * Nothing is recomputed here: `statsReport()` returns `stats.build_report`, the
+ * same dict the core returns, so the totals, the streak, the heatmap and
+ * the terminal can never disagree.  What this page adds is **wording** -- the
+ * sentences live in `lib/statsText.ts` (pure functions, pinned in node), and they
+ * are handed the core's own seconds.  Durations read as `1 小时 5 分` (the same
+ * `format.duration()` the book menu uses), so the only thing that differs from the
+ * terminal is how it is said.
  */
 export default function Stats({ onBack }: { onBack?: () => void } = {}) {
   const [report, setReport] = useState<StatsReport | null>(null);
@@ -35,161 +51,239 @@ export default function Stats({ onBack }: { onBack?: () => void } = {}) {
     void load();
   }, [load]);
 
-  // 从书房挂件展开时，右上角提供回到书架的出口（独立使用时没有）
-  const back = onBack ? (
-    <button className="ghost back" onClick={onBack}>
-      ← 返回书架
-    </button>
-  ) : null;
+  const refresh = () => void load();
 
-  if (error) {
+  // 出错 / 还没拿到报告时也长在纸上：点进来不会先看见一页木头
+  if (error || !report) {
     return (
-      <main className="container">
-        <header className="bar">
-          <h1>统计</h1>
-          {back}
-        </header>
-        <p className="error">{error}</p>
+      <main className="container stats-page">
+        <article className="stats-sheet">
+          <PageHead busy={busy} onRefresh={refresh} onBack={onBack} />
+          {error ? (
+            <p className="error">这一页翻不开：{error}</p>
+          ) : (
+            <p className="stats-note">正在翻页…</p>
+          )}
+        </article>
       </main>
     );
   }
-  if (!report) {
-    return (
-      <main className="container">
-        <header className="bar">
-          <h1>统计</h1>
-          {back}
-        </header>
-        <p className="dim">载入统计…</p>
-      </main>
-    );
-  }
-
-  // 每日目标完成度：用整除算百分比，与 CLI 一致
-  const goalPercent =
-    report.daily_goal_seconds > 0
-      ? Math.floor((report.today_seconds * 100) / report.daily_goal_seconds)
-      : 0;
 
   return (
-    <main className="container">
-      <header className="bar">
-        <h1>统计</h1>
-        <span className="dim">截至 {report.generated_at.replace("T", " ")}</span>
-        <button onClick={() => void load()} disabled={busy}>
-          {busy ? "刷新中…" : "刷新"}
-        </button>
-        {back}
-      </header>
+    <main className="container stats-page">
+      <StatsSheet report={report} busy={busy} onRefresh={refresh} onBack={onBack} />
+    </main>
+  );
+}
 
-      <section className="cards">
-        <div className="card">
-          <span className="dim">总阅读时长</span>
-          <strong>{report.total}</strong>
-        </div>
-        <div className="card">
-          <span className="dim">今日</span>
-          <strong>{formatHours(report.today_seconds)}</strong>
-        </div>
-        <div className="card">
-          <span className="dim">本周</span>
-          <strong>{formatHours(report.week_seconds)}</strong>
-        </div>
-        <div className="card">
-          <span className="dim">本月</span>
-          <strong>{formatHours(report.month_seconds)}</strong>
-        </div>
-        <div className="card">
-          <span className="dim">连续</span>
-          <strong>{report.streak_days} 天</strong>
-          <span className="dim">每天 ≥{Math.floor(report.streak_min_seconds / 60)} 分钟</span>
-        </div>
-        <div className="card">
-          <span className="dim">读完</span>
-          <strong>{report.finished_books} 本</strong>
-          <span className="dim">共读过 {report.books_read} 本</span>
-        </div>
-        <div className="card">
-          <span className="dim">成就</span>
-          <strong>
-            {report.achievements.unlocked_count}/{report.achievements.total}
-          </strong>
-        </div>
-        <div className="card">
-          <span className="dim">最长一次</span>
-          <strong>{formatHours(report.longest_session_seconds)}</strong>
-        </div>
+/**
+ * 一页账本：把一份 `StatsReport` 画成纸上的字。
+ *
+ * 抽成独立组件（数据由外面递进来）是为了能在 node 里把它整页渲染出来点数 ——
+ * 页面自己那个 `Stats` 得等 `statsReport()` 回来，SSR 里等不到。
+ */
+export function StatsSheet(props: {
+  report: StatsReport;
+  busy?: boolean;
+  onRefresh?: () => void;
+  onBack?: () => void;
+}) {
+  const report = props.report;
+  // 完成度只用来画那根描红的条（达没达标由内核的 `goal_met` 说了算）
+  const goal = Math.min(goalPercent(report.today_seconds, report.daily_goal_seconds), 100);
+  const night = nightSentence(report.night_seconds, report.total_seconds);
+
+  return (
+    <article className="stats-sheet">
+      <PageHead
+        stamp={report.generated_at.replace("T", " ")}
+        busy={props.busy}
+        onRefresh={props.onRefresh}
+        onBack={props.onBack}
+      />
+
+      {/* 今天：进门先看这一个数 */}
+      <section className="stats-today">
+        <p className="stats-eyebrow">今天</p>
+        <p className="stats-big">{todayHeadline(report.today_seconds)}</p>
+        <p className="stats-say">
+          {goalSentence(report.daily_goal_seconds, report.today_seconds, report.goal_met)}
+        </p>
+        {report.daily_goal_seconds > 0 ? (
+          <p
+            className="stats-goalbar"
+            title={`今天 ${duration(report.today_seconds)} / 目标 ${duration(report.daily_goal_seconds)}`}
+          >
+            <span style={{ width: `${goal}%` }} />
+          </p>
+        ) : null}
       </section>
 
-      {report.daily_goal_seconds > 0 ? (
-        <section className="goal">
-          <div className="row">
-            <span>每日目标 {formatHours(report.daily_goal_seconds)}</span>
-            <span className="dim">
-              今日 {formatHours(report.today_seconds)} · {goalPercent}%
-              {report.goal_met ? " ✓" : ""}
-            </span>
-          </div>
-          <progress value={Math.min(goalPercent, 100)} max={100} />
-        </section>
-      ) : null}
+      {/* 这些天：本周 / 本月 / 一共 */}
+      <section className="stats-block">
+        <h3>这些天</h3>
+        <ul className="stats-lines">
+          <li>
+            <span>这一周</span>
+            <i className="stats-leader" />
+            <b>{durationWords(report.week_seconds)}</b>
+          </li>
+          <li>
+            <span>这个月</span>
+            <i className="stats-leader" />
+            <b>{durationWords(report.month_seconds)}</b>
+          </li>
+          <li>
+            <span>从第一页到现在</span>
+            <i className="stats-leader" />
+            <b>{durationWords(report.total_seconds)}</b>
+          </li>
+        </ul>
+      </section>
+      {/* 坚持：连着几天 + 几件「读过多少」的小账 */}
+      <section className="stats-block">
+        <h3>坚持</h3>
+        <p className="stats-say">
+          {streakSentence(report.streak_days, report.streak_min_seconds, report.today_seconds)}
+        </p>
+        <ul className="stats-lines">
+          <li>
+            <span>一口气读得最久的一次</span>
+            <i className="stats-leader" />
+            <b>{durationWords(report.longest_session_seconds)}</b>
+          </li>
+          <li>
+            <span>翻开过的书</span>
+            <i className="stats-leader" />
+            <b>{report.books_read} 本</b>
+          </li>
+          <li>
+            <span>其中读完的</span>
+            <i className="stats-leader" />
+            <b>{report.finished_books} 本</b>
+          </li>
+          <li>
+            <span>记下的生词</span>
+            <i className="stats-leader" />
+            <b>{report.vocab_count} 个</b>
+          </li>
+          <li>
+            <span>查过的译文</span>
+            <i className="stats-leader" />
+            <b>{report.translations} 次</b>
+          </li>
+          <li>
+            <span>攒到的勋章</span>
+            <i className="stats-leader" />
+            <b>
+              {report.achievements.unlocked_count} / {report.achievements.total} 枚
+            </b>
+          </li>
+        </ul>
+        {/* 凌晨读过的（0~4 点）才有这一句；没读过整行不出现 */}
+        {night ? <p className="stats-note">{night}</p> : null}
+      </section>
 
-      <section>
-        <h2>最近 {report.heatmap.length} 天</h2>
-        <div className="heatmap">
+      {/* 最近这些天：一格格手画的小方块 */}
+      <section className="stats-block">
+        <h3>最近 {report.heatmap.length} 天</h3>
+        <div className="stats-days">
           {report.heatmap_grid.map((week, weekday) => (
-            <div className="heat-row" key={WEEKDAY_LABELS[weekday]}>
-              <span className="dim heat-label">{WEEKDAY_LABELS[weekday]}</span>
+            <div className="stats-days-row" key={WEEKDAY_LABELS[weekday]}>
+              <span className="stats-days-label">{WEEKDAY_LABELS[weekday]}</span>
               {week.map((cell, column) => {
-                // null = 窗口之外的那几天，画个空白占位
+                // null = 窗口之外的那几天，占个位（列才对得齐，与内核的 heatmap_grid 一致）
                 const level = cell ? HEATMAP_CHARS.indexOf(cell.level) : -1;
                 return (
                   <span
                     key={column}
-                    className={`heat heat-${level}`}
-                    title={cell ? `${cell.date} · ${formatHours(cell.seconds)}` : ""}
+                    className={`stats-day lv${level}`}
+                    title={cell ? dayTitle(cell) : ""}
                   />
                 );
               })}
             </div>
           ))}
         </div>
-        <p className="dim heat-legend">
-          <span>强度：</span>
+        <p className="stats-days-legend">
+          <span>一横排是一周，一竖列是同一个星期几：</span>
           {HEATMAP_CHARS.map((char) => (
-            <span key={char} className="heat-legend-item">
-              <span className={`heat heat-${HEATMAP_CHARS.indexOf(char)}`} />
-              {heatLabel(char)}
+            <span className="stats-days-legend-item" key={char}>
+              <span className={`stats-day lv${HEATMAP_CHARS.indexOf(char)}`} />
+              {heatPlainLabel(char)}
             </span>
           ))}
         </p>
       </section>
 
-      <section>
-        <h2>本书累计</h2>
+      {/* 每本书读了多久：手绘的占比条 + 时长 */}
+      <section className="stats-block">
+        <h3>每本书读了多久</h3>
         {report.books.length > 0 ? (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>书名</th>
-                <th>id</th>
-                <th className="right">时长</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report.books.map((book) => (
-                <tr key={book.id}>
-                  <td>{book.title || book.id}</td>
-                  <td className="dim">{book.id}</td>
-                  <td className="right">{formatHours(book.seconds)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <ul className="stats-books">
+            {report.books.map((book) => (
+              // 书 id 是内核的坐标，画在纸上没用 —— 悬停时才给（排查问题时对得上）
+              <li key={book.id} title={`${book.id}｜占总时长的 ${bookShare(book.seconds, report.total_seconds)}%`}>
+                <span className="stats-books-name">{book.title || book.id}</span>
+                <span className="stats-books-bar">
+                  <i style={{ width: `${bookShare(book.seconds, report.total_seconds)}%` }} />
+                </span>
+                <b>{duration(book.seconds)}</b>
+              </li>
+            ))}
+          </ul>
         ) : (
-          <p className="dim">还没有阅读记录。</p>
+          <p className="stats-note">还没有阅读记录 —— 翻开一本书，这一页就开始记了。</p>
         )}
       </section>
-    </main>
+
+      <footer className="stats-foot">
+        <span>这些数字都存在本机，只有一份 —— 界面上每一处读的都是它。</span>
+      </footer>
+    </article>
+  );
+}
+
+/** 格子上的悬停提示：日期 + 那天读了多久（没读就说没读）。 */
+function dayTitle(cell: HeatCell): string {
+  return `${cell.date} · ${cell.seconds > 0 ? duration(cell.seconds) : "没读"}`;
+}
+
+/**
+ * 页眉：标题 + 「记到几点」+ 两个按钮。
+ *
+ * 标题是**读书日记**（墙上那枚便利贴就写着「日记」），后面跟一枚小标签点明它是统计，
+ * 省得按 `S` 进来的人以为自己走错了页。
+ */
+function PageHead(props: {
+  stamp?: string;
+  busy?: boolean;
+  onRefresh?: () => void;
+  onBack?: () => void;
+}) {
+  return (
+    <header className="stats-head">
+      <h1 className="stats-title">读书日记</h1>
+      <span className="stats-tag" title="这一页就是统计：数字都来自内核">
+        统计
+      </span>
+      {props.stamp ? <span className="stats-stamp">记到 {props.stamp}</span> : null}
+      <div className="stats-tools">
+        {props.onRefresh ? (
+          <button onClick={props.onRefresh} disabled={props.busy}>
+            {props.busy ? "刷新中…" : "刷新"}
+          </button>
+        ) : null}
+        {props.onBack ? (
+          <button
+            className="ghost back"
+            title={`返回书架（${BACK_KEY_LABEL}）`}
+            onClick={props.onBack}
+          >
+            ← 返回书架
+          </button>
+        ) : null}
+      </div>
+    </header>
   );
 }

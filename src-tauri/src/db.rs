@@ -28,13 +28,14 @@ use sqlx::{Row, SqlitePool};
 /// Bumped whenever [`SCHEMA`] changes in a way an old cache cannot survive.
 ///
 /// The cache is disposable, so the policy is "detect and rebuild" rather than
-/// "migrate one table at a time": see [`Db::open`].
-pub const SCHEMA_VERSION: i64 = 1;
+/// "migrate one table at a time": see [`Db::open`].  Bumped to 2 when the PDF
+/// fields (`format` / `pages` / `text_path`) joined the `books` table.
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// The whole schema, applied on every start (`IF NOT EXISTS` makes it idempotent).
 ///
 /// The `books` columns mirror the flat rows the core's `list` method returns
-/// (see `wreader/serve.py::_book_rows`), so syncing is a straight copy.
+/// (see `core/wreader/serve.py::_book_rows`), so syncing is a straight copy.
 ///
 /// Deliberately **DDL only**: connection settings such as WAL mode are applied once
 /// in [`Db::open`], because a `PRAGMA` cannot run inside the transaction
@@ -51,6 +52,11 @@ CREATE TABLE IF NOT EXISTS books (
     title               TEXT NOT NULL DEFAULT '',
     author              TEXT NOT NULL DEFAULT '',
     file_path           TEXT NOT NULL DEFAULT '',
+    -- 图片模式的 pdf：format = 'pdf'、pages = 页数、text_path = 转成文字后的 txt
+    -- （其它格式一律空值，所以老书架读出来与从前一样）
+    format              TEXT NOT NULL DEFAULT '',
+    pages               INTEGER NOT NULL DEFAULT 0,
+    text_path           TEXT NOT NULL DEFAULT '',
     total_lines         INTEGER NOT NULL DEFAULT 0,
     total_words         INTEGER NOT NULL DEFAULT 0,
     chapter_count       INTEGER NOT NULL DEFAULT 0,
@@ -159,7 +165,9 @@ pub fn desegment_cjk(text: &str) -> String {
         if *ch == ' ' {
             let left = chars.get(index.wrapping_sub(1));
             let right = chars.get(index + 1);
-            if left.is_some_and(|prev| is_cjk(*prev)) || right.is_some_and(|next| is_cjk(*next)) {
+            let left_is_cjk = left.map_or(false, |prev| is_cjk(*prev));
+            let right_is_cjk = right.map_or(false, |next| is_cjk(*next));
+            if left_is_cjk || right_is_cjk {
                 continue;
             }
         }
@@ -182,6 +190,15 @@ pub struct BookRow {
     /// 转换后的正文路径（GUI 不读它，只用来排查问题）
     #[serde(default)]
     pub file_path: String,
+    /// 书的形式：`"pdf"` 表示**图片模式**的 PDF，其余格式是空串
+    #[serde(default)]
+    pub format: String,
+    /// 图片模式 PDF 的页数（普通书是 0）
+    #[serde(default)]
+    pub pages: i64,
+    /// 「转换成文字」之后那份 txt 的路径（没转之前是空串）
+    #[serde(default)]
+    pub text_path: String,
     /// 正文总行数（内核的坐标）
     #[serde(default)]
     pub total_lines: i64,
@@ -274,6 +291,9 @@ fn book_from_row(row: &sqlx::sqlite::SqliteRow) -> BookRow {
         title: row.try_get("title").unwrap_or_default(),
         author: row.try_get("author").unwrap_or_default(),
         file_path: row.try_get("file_path").unwrap_or_default(),
+        format: row.try_get("format").unwrap_or_default(),
+        pages: row.try_get("pages").unwrap_or_default(),
+        text_path: row.try_get("text_path").unwrap_or_default(),
         total_lines: row.try_get("total_lines").unwrap_or_default(),
         total_words: row.try_get("total_words").unwrap_or_default(),
         chapter_count: row.try_get("chapter_count").unwrap_or_default(),
@@ -390,15 +410,18 @@ impl Db {
             // tags 是数组：以 JSON 字符串存一列，读的时候再解析
             let tags = serde_json::to_string(&row.tags).unwrap_or_else(|_| "[]".to_string());
             sqlx::query(
-                "INSERT INTO books (id, title, author, file_path, total_lines, total_words,
-                 chapter_count, current_line, percentage, last_read, total_time_seconds,
-                 finished, tags, synced_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                "INSERT INTO books (id, title, author, file_path, format, pages, text_path,
+                 total_lines, total_words, chapter_count, current_line, percentage, last_read,
+                 total_time_seconds, finished, tags, synced_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             )
             .bind(&row.id)
             .bind(&row.title)
             .bind(&row.author)
             .bind(&row.file_path)
+            .bind(&row.format)
+            .bind(row.pages)
+            .bind(&row.text_path)
             .bind(row.total_lines)
             .bind(row.total_words)
             .bind(row.chapter_count)
@@ -428,8 +451,9 @@ impl Db {
     pub async fn list_books(&self) -> Result<Vec<BookRow>, sqlx::Error> {
         // `last_read IS NULL` 排在后面：SQLite 里 NULL 最小，直接 DESC 会把没读过的顶上来
         let rows = sqlx::query(
-            "SELECT id, title, author, file_path, total_lines, total_words, chapter_count,
-                    current_line, percentage, last_read, total_time_seconds, finished, tags
+            "SELECT id, title, author, file_path, format, pages, text_path, total_lines,
+                    total_words, chapter_count, current_line, percentage, last_read,
+                    total_time_seconds, finished, tags
              FROM books
              ORDER BY (last_read IS NULL), last_read DESC, title",
         )
@@ -709,6 +733,10 @@ mod tests {
             title: title.to_string(),
             author: "某人".to_string(),
             file_path: String::new(),
+            // 普通文本：PDF 那三列留空（图片模式的 pdf 才会有值）
+            format: String::new(),
+            pages: 0,
+            text_path: String::new(),
             total_lines: 10,
             total_words: 100,
             chapter_count: 2,
@@ -805,7 +833,7 @@ mod tests {
 
     #[test]
     fn a_book_row_from_the_core_deserialises() {
-        // 这是 `wreader/serve.py::_book_rows` 真实吐出来的形状（终端与 GUI 共用）。
+        // 这是 `core/wreader/serve.py::_book_rows` 真实吐出来的形状（终端与 GUI 共用）。
         // 多出来的键（bookmarks / encoding…）BookRow 不声明，serde 默认忽略。
         let json = r#"{
             "id": "3e027c4de949",
@@ -852,6 +880,39 @@ mod tests {
         let back = serde_json::to_value(&position).expect("to value");
         assert!(back.get("book_id").is_some());
         assert!(back.get("updated_at").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_pdf_row_keeps_its_image_mode_fields() {
+        // 图片模式的 pdf 靠这三列：书架据此知道「画页面」而不是「排文字」
+        let path = temp_db("pdf-row");
+        let db = Db::open(&path).await.expect("open");
+        let mut row = book("pdf123", "扫描版", 0.0);
+        row.format = "pdf".to_string();
+        row.pages = 785;
+        row.file_path = "/novels/扫描版_utf8.pdf".to_string();
+        db.replace_books(&[row], "2026-03-01T21:00:00")
+            .await
+            .expect("replace");
+        let rows = db.list_books().await.expect("list");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].format, "pdf");
+        assert_eq!(rows[0].pages, 785);
+        // 还没「转换成文字」：text_path 是空串
+        assert_eq!(rows[0].text_path, "");
+        // 转换成文字之后：text_path 与行数都跟着变，pages 不动（图片模式照样能用）
+        let mut converted = rows[0].clone();
+        converted.text_path = "/novels/扫描版_utf8.txt".to_string();
+        converted.total_lines = 16456;
+        db.replace_books(&[converted], "2026-03-01T21:01:00")
+            .await
+            .expect("replace");
+        let rows = db.list_books().await.expect("list");
+        assert_eq!(rows[0].text_path, "/novels/扫描版_utf8.txt");
+        assert_eq!(rows[0].total_lines, 16456);
+        assert_eq!(rows[0].pages, 785);
+        // 收尾：临时库连同目录一起删掉
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[tokio::test]

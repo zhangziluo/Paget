@@ -1,0 +1,503 @@
+/*
+ * 成就页（`views/Achievements.tsx`）—— 暗底 + 金徽章的「勋章墙」。
+ *
+ * 一枚徽章就是一枚**铁十字**（十字纹章：四臂向外张开、内四个角是内凹的小弧）：
+ * 形状由内联 SVG 的 `path()` 画（内凹的曲线角用 `clip-path` 的 `polygon`
+ * 剪不出来，只能给折线），金属感交给 CSS —— 渐变的 `fill`、`drop-shadow` 的光晕、
+ * 凹槽的阴影，仍然不用图片。
+ *
+ * 三档状态：
+ *   · `is-gold`   已授予：纯金，章面亮、外框厚、背后一圈暖光；
+ *   · `is-iron`   未授予：冷铁色，同一枚章但没上金，中间的花纹压成灰的；
+ *   · `is-secret` 隐藏成就：铁色 + 章心一个问号，解锁前不剧透。
+ *
+ * 暗色底是**这一页要的样子**，不跟昼夜走（金必须衬在暗上），所以颜色写在
+ * `.container.ach-page` 里，不去动全局变量；深色木纹下就靠那条金描边把板子
+ * 从木头上"切"出来。
+ *
+ * 尺寸一律 rem：跟着用户调的字号走。这一份由 `App.css` 顶部 `@import` 进来，
+ * 凡是要压过 `App.css` 的规则都得带上够长的前缀 —— 这里就是 `.container.ach-page`
+ * 与 `.ach-case`。
+ */
+
+.container.ach-page {
+  /* 陈列板：黑漆底 + 略暖的一档（打光用） */
+  --ach-plate: #14100b;
+  /* 金：从最亮的反光到最深的一道边 */
+  --ach-gold: #e8c375;
+  --ach-gold-deep: #a97b18;
+  --ach-gold-line: rgba(212, 175, 65, 0.34);
+  --ach-gold-soft: rgba(255, 226, 150, 0.08);
+  /* 板上的字：米金与暗淡一档 */
+  --ach-ink: #f4e6c2;
+  --ach-dim: rgba(244, 230, 194, 0.62);
+  /* 凹陷（空槽 / 凹槽）里的暗 */
+  --ach-cavity: rgba(0, 0, 0, 0.62);
+
+  align-items: center;
+}
+
+/* ---------------- 那块黑漆陈列板 ---------------- */
+
+.ach-case {
+  position: relative;
+  width: min(56rem, 100%);
+  padding: 1rem 1.3rem 1.2rem;
+  color: var(--ach-ink);
+  background-color: var(--ach-plate);
+  background-image:
+    /* 顶上打下来的一束光 */
+    radial-gradient(120% 60% at 50% -8%, rgba(255, 214, 140, 0.09), transparent 62%),
+    /* 四角压暗，像板子摆在灯下 */
+    radial-gradient(140% 120% at 50% 50%, transparent 45%, rgba(0, 0, 0, 0.55)),
+    /* 细织纹：近看才看得见的一句"这是漆面" */
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.014) 0 1px, transparent 1px 3px);
+  border: 1px solid var(--ach-gold-line);
+  border-radius: 10px;
+  box-shadow:
+    /* 内圈一道金线 + 顶边一道反光 + 里侧压深 */
+    inset 0 0 0 3px rgba(212, 175, 65, 0.1),
+    inset 0 1px 0 rgba(255, 226, 150, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.7),
+    0 14px 30px rgba(0, 0, 0, 0.42);
+}
+
+/* 板面外沿再描一道细金线，像相框的双线 */
+.ach-case::before {
+  content: "";
+  position: absolute;
+  inset: 0.35rem;
+  border: 1px solid rgba(212, 175, 65, 0.14);
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+/* ---------------- 页眉：一块金字的铭牌 ---------------- */
+
+.ach-head {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.7rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--ach-gold-line);
+}
+
+.ach-title {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  color: var(--ach-gold);
+  text-shadow:
+    0 0 12px rgba(232, 195, 117, 0.35),
+    0 1px 0 rgba(0, 0, 0, 0.8);
+}
+
+/* 「成就」这枚小标签：点明这是按徽章盒 / A 进来的那一页 */
+.ach-tag {
+  padding: 0.05rem 0.5rem;
+  border: 1px solid var(--ach-gold-line);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  color: var(--ach-dim);
+}
+
+/* 已有几枚 / 一共几枚 */
+.ach-tally {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  margin: 0 0 0 0.2rem;
+}
+
+.ach-tally b {
+  font-size: 1.5rem;
+  line-height: 1;
+  color: var(--ach-gold);
+  text-shadow: 0 0 10px rgba(232, 195, 117, 0.4);
+}
+
+.ach-tally-of {
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  color: var(--ach-dim);
+}
+
+.ach-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: auto;
+}
+
+/* 暗板上那两枚按钮：不再是木头凸起的一枚（不然白得晃眼） */
+.ach-tools button {
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--ach-gold-line);
+  border-radius: 999px;
+  color: var(--ach-ink);
+  background-color: var(--ach-gold-soft);
+  background-image: none;
+  box-shadow: none;
+}
+
+.ach-tools button:hover:not(:disabled) {
+  border-color: var(--ach-gold);
+  background-color: rgba(255, 226, 150, 0.16);
+}
+
+.ach-tools button.ghost {
+  background-color: transparent;
+  color: var(--ach-dim);
+}
+
+.ach-tools button.ghost:hover:not(:disabled) {
+  color: var(--ach-ink);
+  border-color: var(--ach-gold-line);
+}
+
+/* 已授予的比例：一条细金条，底下是凹槽 */
+.ach-gauge {
+  height: 0.4rem;
+  margin: 0.7rem 0 0.2rem;
+  border: 1px solid var(--ach-gold-line);
+  border-radius: 999px;
+  background-color: var(--ach-cavity);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.7) inset;
+  overflow: hidden;
+}
+
+.ach-gauge > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background-image: linear-gradient(90deg, var(--ach-gold-deep), var(--ach-gold) 65%, #fff6d4);
+  box-shadow: 0 0 7px rgba(255, 208, 110, 0.55);
+}
+
+/* ---------------- 小节：铸在板上的铭牌 ---------------- */
+
+.ach-block {
+  margin-top: 0.9rem;
+}
+
+/* 「已授予 / 待授予」：两侧拉出细金线 */
+.ach-plate-title {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  letter-spacing: 0.4em;
+  color: var(--ach-gold);
+}
+
+.ach-plate-title::before,
+.ach-plate-title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+}
+
+.ach-plate-title::before {
+  background-image: linear-gradient(90deg, transparent, var(--ach-gold-line));
+}
+
+.ach-plate-title::after {
+  background-image: linear-gradient(90deg, var(--ach-gold-line), transparent);
+}
+
+/* 分类：更小的一面铭牌，前面缀一粒金菱；上边留够，别贴到上一排的说明上 */
+.ach-cat {
+  margin: 1.05rem 0 0.4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--ach-dim);
+}
+
+.ach-cat::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.4rem;
+  height: 0.4rem;
+  background-color: var(--ach-gold-deep);
+  box-shadow: 0 0 5px rgba(255, 208, 110, 0.5);
+  transform: rotate(45deg);
+}
+
+/* ---------------- 徽章墙 ---------------- */
+
+.ach-wall {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 1.1rem 0.9rem;
+}
+
+.ach-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  text-align: center;
+}
+
+.ach-name {
+  position: relative;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  /* 暗底上的字：底下压一道暗影，像刻进去的 */
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.75);
+}
+
+/* 名字底下一道细线：像铭牌上刻的一行 */
+.ach-name::after {
+  content: "";
+  position: absolute;
+  left: -0.35rem;
+  right: -0.35rem;
+  bottom: -0.2rem;
+  height: 1px;
+  background-image: linear-gradient(90deg, transparent, var(--ach-gold-line) 20% 80%, transparent);
+}
+
+/* 还没授予的：名字底下是虚线（刻了一半） */
+.ach-badge.is-locked .ach-name::after {
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(212, 175, 65, 0.3) 0 0.18rem,
+    transparent 0.18rem 0.36rem
+  );
+}
+
+.ach-meta {
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
+  color: rgba(244, 230, 194, 0.45);
+}
+
+.ach-desc {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--ach-dim);
+}
+
+/* 解锁时间：比说明再淡一档 */
+.ach-date {
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  color: rgba(244, 230, 194, 0.38);
+}
+
+/* 进行中那几枚：整张压暗一点，别和已授予的抢眼 */
+.ach-badge.is-locked {
+  opacity: 0.88;
+}
+
+/* 进度：一条更细的金条（与页眉那条同一套做法） */
+.ach-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  font-size: 0.72rem;
+  color: var(--ach-dim);
+}
+
+.ach-progress-bar {
+  flex: 1;
+  height: 0.3rem;
+  border: 1px solid rgba(212, 175, 65, 0.24);
+  border-radius: 999px;
+  background-color: var(--ach-cavity);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.6) inset;
+  overflow: hidden;
+}
+
+.ach-progress-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background-image: linear-gradient(90deg, rgba(169, 123, 24, 0.75), rgba(232, 195, 117, 0.75));
+}
+
+/* ---------------- 那枚铁十字 ---------------- */
+
+.ach-medal {
+  position: relative;
+  display: block;
+  width: 5rem;
+  height: 5rem;
+}
+
+.ach-medal svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* 凹槽：比勋章大一圈，上暗下亮 —— 勋章是"嵌"进板子里的。
+   暗板上光靠阴影看不出凹，所以沿上缘再描一道细金线（就是板子被挖开的那道口） */
+.ach-medal-socket path {
+  fill: url(#ach-socket);
+  stroke: rgba(212, 175, 65, 0.3);
+  stroke-width: 0.8;
+}
+
+/* 章体默认就是**生铁**那一档：未授予（`is-iron`）与隐藏成就（`is-secret`）
+   共用它，只有 `.is-gold` 才镀金 —— 这样"没上金"是默认态，不用给两个状态各写一遍 */
+.ach-medal-body .ach-cross-frame {
+  fill: url(#ach-iron-frame);
+}
+
+.ach-medal-body .ach-cross-face {
+  fill: url(#ach-iron-face);
+}
+
+.ach-medal-body .ach-cross-core {
+  fill: url(#ach-iron-core);
+}
+
+.ach-medal-body .ach-cross-ring {
+  fill: none;
+  stroke: rgba(0, 0, 0, 0.4);
+  stroke-width: 1.2;
+}
+
+.ach-medal-body .ach-cross-bevel {
+  fill: url(#ach-bevel);
+  opacity: 0.45;
+}
+
+.ach-medal.is-iron .ach-medal-body,
+.ach-medal.is-secret .ach-medal-body {
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.6));
+}
+
+/* 已授予：章面镀金、外框跟着亮，章体后面再垫一层暖光
+   （`drop-shadow` 会自己贴着十字轮廓走，不用另画一层光） */
+.ach-medal.is-gold .ach-medal-body .ach-cross-frame {
+  fill: url(#ach-gold-frame);
+}
+
+.ach-medal.is-gold .ach-medal-body .ach-cross-face {
+  fill: url(#ach-gold-face);
+}
+
+.ach-medal.is-gold .ach-medal-body .ach-cross-core {
+  fill: url(#ach-gold-core);
+}
+
+.ach-medal.is-gold .ach-medal-body .ach-cross-ring {
+  stroke: rgba(120, 84, 12, 0.55);
+}
+
+.ach-medal.is-gold .ach-medal-body .ach-cross-bevel {
+  opacity: 1;
+}
+
+.ach-medal.is-gold .ach-medal-body {
+  filter:
+    drop-shadow(0 0 8px rgba(255, 202, 96, 0.5))
+    drop-shadow(0 3px 4px rgba(0, 0, 0, 0.7));
+}
+
+/* 章心那个花纹：已授予用成就自己那枚符号，未授予压成灰的 */
+.ach-medal-device {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 1.5rem;
+  line-height: 1;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
+}
+
+.ach-medal.is-iron .ach-medal-device,
+.ach-medal.is-secret .ach-medal-device {
+  filter: grayscale(1) brightness(0.95);
+  opacity: 0.62;
+}
+
+/* 隐藏成就：章心一个问号，刻进铁里 */
+.ach-medal.is-secret .ach-medal-device {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: rgba(8, 10, 12, 0.6);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.12);
+  opacity: 1;
+}
+
+/* 那套金属渐变只定义一份（`AchievementsBoard` 里那个隐藏的 `<svg>`），
+   先把定义它的元素收掉，别在版面上占位置 */
+.ach-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+/* ---------------- 板上的零碎 ---------------- */
+
+.ach-page .error {
+  color: #e8a08a;
+}
+
+.ach-page .notice {
+  color: var(--ach-gold);
+}
+
+.ach-note {
+  margin: 0.4rem 0 0;
+  font-size: 0.88rem;
+  color: var(--ach-dim);
+}
+
+/* 页脚：一句大白话交代金徽章是从哪儿来的 */
+.ach-foot {
+  margin-top: 1rem;
+  padding-top: 0.6rem;
+  border-top: 1px dashed rgba(212, 175, 65, 0.22);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  color: rgba(244, 230, 194, 0.45);
+}
+
+/* 窄屏：板子留白收窄，墙上的列跟着变窄 */
+@media (max-width: 640px) {
+  .ach-case {
+    padding: 0.8rem 0.85rem 1rem;
+  }
+
+  .ach-wall {
+    grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+    gap: 0.9rem 0.6rem;
+  }
+
+  .ach-medal {
+    width: 4.4rem;
+    height: 4.4rem;
+  }
+
+  .ach-medal-device {
+    font-size: 1.3rem;
+  }
+
+  .ach-title {
+    font-size: 1.15rem;
+  }
+}

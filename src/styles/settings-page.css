@@ -1,0 +1,525 @@
+/*
+ * 设置页（`views/Settings.tsx`）—— 一页手绘风的「调一调」清单。
+ *
+ * 与统计页那一纸日记（`styles/stats-page.css`）同一套做法：**纯 CSS** 塑形，
+ * 不用图片、不引 web font；手写体用全局的 `--hand-font`（`App.css` 的 `:root`，
+ * 与墙上那三枚便利贴同源）。两页的差别只在「纸」上：
+ * 日记是一页**横格稿纸**，设置是一页**方格纸** —— 一格一格的开关摆在方格上，
+ * 更像手上那张「清单」；尺寸一律 rem，跟着用户调的字号走。
+ *
+ * 这一份是 `@import` 进 `App.css` 顶部的（和 sticky-note / stats-page / achievements 一样），
+ * 而 `@import` 的规则**排在那份文件的规则前面** —— 所以凡是要压过 `App.css` 的，
+ * 这里都自己带上够长的选择器前缀（`.settings-sheet` / `.container.settings-page`）。
+ */
+
+/* 纸页上这套颜色：只在本页生效，不去动全局变量。
+   挂在**纸上**而不是外面的容器上：嵌进齿轮（`Desk`）时外面那层是 `.container`，
+   不会带上 `.settings-page`，颜色得跟着纸走。 */
+.settings-sheet {
+  /* 墨色（正文、名字） */
+  --set-ink: var(--ink);
+  /* 铅笔：画线、描边、方框 */
+  --set-pencil: rgba(90, 62, 36, 0.55);
+  --set-pencil-soft: rgba(90, 62, 36, 0.28);
+  /* 方格纸的格线（很淡）与页边那道竖线 */
+  --set-rule: rgba(120, 90, 50, 0.11);
+  --set-margin-line: rgba(164, 51, 31, 0.26);
+  /* 荧光笔（小节标题底下那一抹）与胶带 */
+  --set-marker: rgba(224, 162, 78, 0.35);
+  --set-tape: rgba(232, 216, 186, 0.82);
+  /* 加粗的铅笔：勾、写字的横线 */
+  --set-heavy: #8a6338;
+  /* 纸页外那一圈淡描边 */
+  --set-ring: rgba(90, 62, 36, 0.1);
+}
+
+/* 深色木纹下：纸本来就是深色的，线要反过来调淡、调暖 */
+@media (prefers-color-scheme: dark) {
+  .settings-sheet {
+    --set-pencil: rgba(255, 226, 175, 0.55);
+    --set-pencil-soft: rgba(255, 226, 175, 0.28);
+    --set-rule: rgba(255, 226, 175, 0.09);
+    --set-margin-line: rgba(224, 138, 114, 0.28);
+    --set-marker: rgba(224, 162, 78, 0.28);
+    --set-tape: rgba(120, 96, 66, 0.7);
+    --set-heavy: #e2c191;
+    --set-ring: rgba(255, 226, 175, 0.12);
+  }
+}
+
+/* 独立成页时（不嵌在齿轮里）：居中那张纸 */
+.container.settings-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/*
+ * 那一页纸。
+ *
+ * 手绘感与统计页同源：**不对称圆角**（像手工裁的）+ **两道 0 模糊描边**
+ * （像描了两遍的铅笔）+ 左上一条**胶带**（`::before`）+ 右上**折角**（`::after`）；
+ * 底上多一层方格 + 页边那道竖线。
+ */
+.settings-sheet {
+  position: relative;
+  width: 100%;
+  max-width: 52rem;
+  /* 嵌进齿轮（`Desk`）时外面那层 `.container` 是 flex 列：靠这一行把纸摆在正中，
+     不然 52rem 的纸会贴左，右边空出一大片木头 */
+  align-self: center;
+  padding: 1.4rem 1.9rem 1.1rem 3rem;
+  color: var(--set-ink);
+  font-family: var(--hand-font);
+  background-color: var(--paper);
+  background-image:
+    /* 页边那道竖线（离左边缘 2.4rem） */
+    linear-gradient(
+      90deg,
+      transparent 0 2.4rem,
+      var(--set-margin-line) 2.4rem,
+      var(--set-margin-line) calc(2.4rem + 1px),
+      transparent calc(2.4rem + 1px)
+    ),
+    /* 方格：横竖各每 1.6rem 一条 */
+    repeating-linear-gradient(
+      180deg,
+      transparent 0 1.6rem,
+      var(--set-rule) 1.6rem,
+      var(--set-rule) calc(1.6rem + 1px)
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0 1.6rem,
+      var(--set-rule) 1.6rem,
+      var(--set-rule) calc(1.6rem + 1px)
+    );
+  border: none;
+  border-radius: 7px 15px 8px 17px / 16px 7px 18px 8px;
+  box-shadow:
+    0 0 0 1px var(--set-pencil-soft),
+    0 0 0 2.5px var(--set-ring),
+    0 12px 24px rgba(40, 25, 10, 0.3),
+    0 2px 5px rgba(40, 25, 10, 0.2);
+}
+
+/* 左上角那一小条胶带：把这一页贴在木头上 */
+.settings-sheet::before {
+  content: "";
+  position: absolute;
+  top: -0.7rem;
+  left: 2.2rem;
+  width: 5.4rem;
+  height: 1.5rem;
+  background-color: var(--set-tape);
+  border-left: 1px dashed rgba(120, 90, 50, 0.22);
+  border-right: 1px dashed rgba(120, 90, 50, 0.22);
+  box-shadow: 0 1px 3px rgba(40, 25, 10, 0.25);
+  transform: rotate(-2.2deg);
+  pointer-events: none;
+}
+
+/* 右上角的折角：把纸角翻起来，露出背面的纸色 */
+.settings-sheet::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 0 15px 0 0;
+  background-image: linear-gradient(
+    225deg,
+    transparent 0 47%,
+    var(--set-pencil-soft) 47% 49%,
+    var(--paper-edge-fill) 49%
+  );
+  box-shadow: -1px 1px 2px rgba(40, 25, 10, 0.12) inset;
+  pointer-events: none;
+}
+
+/* ---------------- 页眉：标题 + 小标签 + 一句交代 ---------------- */
+
+.set-head {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.6rem;
+  /* 右边留出折角那一块：不然右上角那枚按钮会压在折出来的纸角上 */
+  padding: 0 2.6rem 0.7rem 0;
+}
+
+/* 那条分隔线：两端淡出、微微歪一点，像画歪又描回来的 */
+.set-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0.2rem;
+  height: 3px;
+  border-radius: 999px 40% 999px 60%;
+  background-image: linear-gradient(90deg, transparent, var(--set-pencil) 5% 95%, transparent);
+  opacity: 0.55;
+  transform: rotate(-0.18deg);
+}
+
+.set-title {
+  margin: 0;
+  font-size: 1.6rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  /* 手写体笔画偏细，再压一层淡淡的影子当「描了两遍」 */
+  text-shadow: 0.5px 0.5px 0 var(--set-pencil-soft);
+}
+
+/* 「设置」那枚小标签：点明这一页就是按 G 进来的那一页 */
+.set-tag {
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--set-pencil-soft);
+  border-radius: 999px 40% 999px 60%;
+  font-size: 0.8rem;
+  opacity: 0.75;
+  transform: rotate(-1.5deg);
+}
+
+/* 标题底下那一句人话：这一页改的到底是什么 */
+.set-lead {
+  flex: 0 0 100%;
+  margin: 0.35rem 0 0;
+  font-size: 0.98rem;
+  line-height: 1.7;
+  opacity: 0.85;
+}
+
+.set-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: auto;
+}
+
+/* 纸页上的按钮：铅笔描的圆角框，不再是木头凸起的那一枚 */
+.settings-sheet .set-tools button,
+.settings-sheet .set-save {
+  padding: 0.2rem 0.7rem;
+  border: 1.5px solid var(--set-pencil);
+  border-radius: 999px 40% 999px 60%;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  font-family: inherit;
+}
+
+.settings-sheet .set-save:disabled,
+.settings-sheet .set-tools button:disabled {
+  opacity: 0.45;
+}
+
+/* ---------------- 小节 ---------------- */
+
+.set-block {
+  padding: 0.9rem 0 0.3rem;
+}
+
+/* 小标题底下抹一道荧光笔 */
+.set-block h3 {
+  position: relative;
+  display: inline-block;
+  margin: 0 0 0.4rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.set-block h3::after {
+  content: "";
+  position: absolute;
+  left: -0.25rem;
+  right: -0.25rem;
+  bottom: -0.1rem;
+  height: 0.5rem;
+  z-index: -1;
+  border-radius: 40% 999px 60% 999px;
+  background-color: var(--set-marker);
+  transform: rotate(-0.6deg);
+}
+
+/* 节里那句引言（比正文小一号，像页边记的一句批注） */
+.set-block-lead {
+  margin: 0.1rem 0 0.5rem;
+  font-size: 0.92rem;
+  line-height: 1.7;
+  opacity: 0.72;
+}
+
+/* ---------------- 一项设置：一行清单里的一个格子 ---------------- */
+
+/* 一格用一条虚线隔开（像笔记本上撕下来的清单），不留木头卡片 */
+.set-item {
+  padding: 0.55rem 0 0.6rem;
+  border-bottom: 1px dashed var(--set-pencil-soft);
+}
+
+.set-item:last-child {
+  border-bottom: none;
+}
+
+.set-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.6rem;
+}
+
+/* 大白话名字：这一行里最显眼的字 */
+.set-label {
+  flex: 1 1 12rem;
+  min-width: 0;
+  font-size: 1.04rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* 控件那一格：靠右摆 */
+.set-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+/* 那句话：它到底是干什么的 */
+.set-plain {
+  margin: 0.25rem 0 0;
+  font-size: 0.94rem;
+  line-height: 1.75;
+  opacity: 0.88;
+}
+
+/* 一行小字收尾：技术名 + 现在是多少 + 保存 */
+.set-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.5rem;
+  margin: 0.3rem 0 0;
+  font-size: 0.78rem;
+  opacity: 0.72;
+}
+
+/* 技术名（点号路径）：排查时对得上终端与 settings.toml，所以照原样留着 */
+.set-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.74rem;
+}
+
+.set-now {
+  margin-left: auto;
+}
+
+/* ---------------- 纸上的控件：勾选框 / 铅笔线 / 写在横线上 ---------------- */
+
+/*
+ * 开关在纸上不画成木头的滑轨，而是**手画的方框 + 一个勾**：
+ * 底层仍是 `input[type=checkbox]`（键盘、无障碍都照旧），
+ * 只是把原来的滑道画成歪一点的方框，勾用 `::after` 的 `✓`。
+ * 方框的圆角只歪一点点 —— 歪太多就成了一个圆团团，看着不像「勾选框」。
+ */
+.settings-sheet .switch-track {
+  position: relative;
+  width: 1.45rem;
+  height: 1.45rem;
+  border: 1.6px solid var(--set-pencil);
+  border-radius: 3px 5px 3px 6px / 5px 3px 6px 3px;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  transition: none;
+}
+
+.settings-sheet .switch-input {
+  width: 1.45rem;
+  height: 1.45rem;
+}
+
+/* 滑道那个圆钮在纸上没有位置：勾由方框自己画 */
+.settings-sheet .switch-knob {
+  display: none;
+}
+
+.settings-sheet .switch-input:checked + .switch-track {
+  background-color: transparent;
+  border-color: var(--set-heavy);
+}
+
+/* 那个勾：**落在方框里**（不往外冒），稍微歪一点，像手的笔顺 */
+.settings-sheet .switch-input:checked + .switch-track::after {
+  content: "✓";
+  position: absolute;
+  inset: -0.02rem 0 0 0;
+  text-align: center;
+  font-size: 1.15rem;
+  line-height: 1.35rem;
+  font-weight: 700;
+  color: var(--set-heavy);
+  transform: rotate(-7deg);
+}
+
+/* 滑块：底下一道铅笔线，钮是一小块铅笔头 */
+.settings-sheet .slider {
+  flex: 1 1 9rem;
+  min-width: 6rem;
+}
+
+.settings-sheet .slider::-webkit-slider-runnable-track {
+  height: 0;
+  border: none;
+  border-bottom: 2px dashed var(--set-pencil-soft);
+  border-radius: 0;
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.settings-sheet .slider::-webkit-slider-thumb {
+  width: 1.05rem;
+  height: 1.05rem;
+  margin-top: -0.55rem;
+  border: 1.6px solid var(--set-pencil);
+  border-radius: 45% 55% 50% 62% / 58% 45% 62% 48%;
+  background-color: var(--paper);
+  background-image: none;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+/* 输入框：不是木头凹槽，而是**写在一道横线上的字**（精确值 / 目录 / 正则） */
+.settings-sheet input[type="text"],
+.settings-sheet input[type="number"],
+.settings-sheet .text-input,
+.settings-sheet .slider-value {
+  padding: 0.1rem 0.35rem;
+  border: none;
+  border-bottom: 1.4px dashed var(--set-pencil);
+  border-radius: 0;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  font-family: inherit;
+  color: inherit;
+}
+
+.settings-sheet .text-input {
+  flex: 1 1 14rem;
+}
+
+.settings-sheet .slider-value {
+  flex: 0 0 5.4rem;
+  width: 5.4rem;
+  text-align: right;
+}
+
+/* 键盘走到这里时要看得出来：外圈一道铅笔光，与纸上的框同色系 */
+.settings-sheet input:focus-visible {
+  outline: 1.6px dashed var(--set-heavy);
+  outline-offset: 2px;
+}
+
+/* ---------------- 书库文件都在哪儿（内核 paths） ---------------- */
+
+.set-paths {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.92rem;
+}
+
+.set-paths li {
+  /* 一行一项：名目在上、路径在下 —— 四个名目都是一句人话，挤成两列会折行折得很难看 */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.05rem;
+}
+
+/* 名目与路径之间不画满一整行虚线：路径本身就长，够一眼分开了 */
+.set-paths-name {
+  opacity: 0.7;
+}
+
+.set-paths-value {
+  padding-bottom: 0.05rem;
+  border-bottom: 1px dashed var(--set-pencil-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  /* 路径里有空格也照原样折行，别撑破那张纸 */
+  word-break: break-all;
+}
+
+/* ---------------- 页脚与空状态 ---------------- */
+
+/* 页脚：一句人话交代"这些写进哪儿" */
+.set-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px dashed var(--set-pencil-soft);
+  font-size: 0.85rem;
+  opacity: 0.62;
+}
+
+/* 内核没起来时那一句：照样写在纸上，别让人先看见一页木头 */
+.set-empty {
+  margin: 1rem 0 0.6rem;
+  font-size: 0.96rem;
+  line-height: 1.7;
+  opacity: 0.8;
+}
+
+/* 纸页上的报错 / 回执：字比正文小一点，读起来像页边批注 */
+.settings-sheet .error,
+.settings-sheet .notice {
+  margin: 0.5rem 0 0;
+  font-size: 0.94rem;
+  line-height: 1.7;
+}
+
+/* ---------------- 窄屏：纸还是那张纸，只是页边留白收窄 ---------------- */
+
+@media (max-width: 640px) {
+  .settings-sheet {
+    padding: 1.1rem 1rem 0.9rem 1.3rem;
+    /* 页边那道竖线收进留白里，方格照旧 */
+    background-image: repeating-linear-gradient(
+        180deg,
+        transparent 0 1.6rem,
+        var(--set-rule) 1.6rem,
+        var(--set-rule) calc(1.6rem + 1px)
+      ),
+      repeating-linear-gradient(
+        90deg,
+        transparent 0 1.6rem,
+        var(--set-rule) 1.6rem,
+        var(--set-rule) calc(1.6rem + 1px)
+      );
+  }
+
+  .set-label,
+  .set-control {
+    flex: 1 1 100%;
+  }
+
+  .set-control {
+    justify-content: flex-start;
+  }
+
+  .set-paths li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.1rem;
+  }
+}

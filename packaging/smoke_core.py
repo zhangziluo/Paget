@@ -1,4 +1,4 @@
-"""Smoke test for a built `werd-core` binary -- run it on the frozen sidecar.
+"""Smoke test for a built `paget-core` binary -- run it on the frozen sidecar.
 
 Building a binary only proves PyInstaller did not crash; it says nothing about
 whether the *frozen* core can still find its data files, its handlers or
@@ -8,10 +8,13 @@ against the binary and then checks what landed on disk:
 1. the protocol handshake (`ping`) returns a version;
 2. `import` -> `list` -> `toc` -> `text` work on a small Chinese book, and an epub's
    **own cover** lands next to its converted text (that is where the GUI looks for it);
+   a hand-written **PDF** lands in **image mode** (file kept, pages counted, no text
+   parsed) and its 「转换成文字」 step then makes `text` readable -- both halves of the
+   PDF story, through the frozen binary;
 3. `position` and `session` write into **that** temp `$WREADER_HOME`, and the
    session unlocks achievements -- which only works when
    `wreader/data/achievements.json` made it into the bundle;
-4. every method registered in `wreader/serve.py` can be *dispatched* without a
+4. every method registered in `core/wreader/serve.py` can be *dispatched* without a
    missing module (this is what catches a too-eager `excludes` list in the spec);
 5. closing stdin ends the process, and it leaves no orphan behind (a onefile
    build has a bootloader parent plus the real child -- both must go).
@@ -21,7 +24,7 @@ Nothing here touches the user's real library: `$WREADER_HOME` /
 
 Usage::
 
-    python packaging/smoke_core.py src-tauri/binaries/werd-core-x86_64-apple-darwin
+    python packaging/smoke_core.py src-tauri/binaries/paget-core/paget-core
 """
 
 from __future__ import annotations
@@ -62,6 +65,54 @@ _MISSING_MODULE_HINTS = ("ModuleNotFoundError", "ImportError", "No module named"
 
 # 带封面那本 epub 的封面字节（内容无关紧要，能对上就说明"搬对了"）
 EPUB_COVER_BYTES = b"\x89PNG\r\n\x1a\npaget-smoke-cover"
+
+# 带封面那本 pdf 的封面字节（/DCTDecode 是原样搬走的，所以按 JPEG 认）
+PDF_COVER_BYTES = b"\xff\xd8\xff\xe0paget-smoke-cover\xff\xd9"
+
+
+def _write_pdf_with_cover(target: pathlib.Path) -> pathlib.Path:
+    """Write a minimal PDF that carries both text and a cover image.
+
+    一页同时干两件事：``BT ... Tj ET`` 画一行字、``/Im0 Do`` 画一张 ``/DCTDecode`` 图。
+    这样一次导入就同时验证「文字层抽得出来」与「封面搬得过来」—— 而且走的是**内置提取器**
+    （``$WREADER_HOME`` 里没有 ``pdftotext``），正是随包分发时要靠的那条路。
+    """
+    # 1 号字体：WinAnsi + 一条宽度表，够摆一行英文
+    font = (
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding"
+        b" /FirstChar 32 /Widths [500] >>"
+    )
+    # 3 号内容流：先写字，再画封面图
+    content = b"BT /F1 12 Tf 72 700 Td (PDF smoke line) Tj ET q 20 0 0 20 72 660 cm /Im0 Do Q"
+    # 2 号就是那张封面图（原样是 JPEG）
+    image = PDF_COVER_BYTES
+    image_body = (
+        b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB"
+        b" /BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n" % len(image)
+        + image + b"\nendstream"
+    )
+    objects = [
+        font,
+        image_body,
+        b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+        b"<< /Type /Page /Parent 5 0 R /MediaBox [0 0 612 792]"
+        b" /Resources << /Font << /F1 1 0 R >> /XObject << /Im0 2 0 R >> >> /Contents 3 0 R >>",
+        b"<< /Type /Pages /Kids [4 0 R] /Count 1 >>",
+        b"<< /Type /Catalog /Pages 5 0 R >>",
+    ]
+    # 手写一遍：头部 + 对象 + 传统 xref 表 + trailer
+    data = bytearray(b"%PDF-1.7\n")
+    offsets = []
+    for index, body in enumerate(objects, start=1):
+        offsets.append(len(data))
+        data += b"%d 0 obj\n" % index + body + b"\nendobj\n"
+    start = len(data)
+    data += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    for offset in offsets:
+        data += b"%010d 00000 n \n" % offset
+    data += b"trailer\n<< /Size %d /Root 6 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, start)
+    target.write_bytes(bytes(data))
+    return target
 
 
 def _write_epub_with_cover(target: pathlib.Path) -> pathlib.Path:
@@ -134,7 +185,7 @@ def _pids(name: str) -> set:
 
 
 def _methods(core_root: pathlib.Path) -> list:
-    """Read the registered method names out of `wreader/serve.py`."""
+    """Read the registered method names out of `core/wreader/serve.py`."""
     # 找不到源码树就跳过这一步（不是失败：脚本仍能验阅读路径）
     source = core_root / "wreader" / "serve.py"
     if not source.is_file():
@@ -153,9 +204,9 @@ def main(argv: list) -> int:
     binary = pathlib.Path(argv[1]).resolve()
     if not binary.is_file():
         _fail("no such binary: {}".format(binary))
-    # 默认按"两个仓库并排"找内核源码（方法扫描用）
+    # 内核源码就在本仓库里（方法扫描用）
     gui_root = pathlib.Path(__file__).resolve().parent.parent
-    core_root = pathlib.Path(os.environ.get("WREADER_ROOT") or gui_root.parent / "wreader")
+    core_root = pathlib.Path(os.environ.get("PAGET_CORE_ROOT") or gui_root / "core")
     # 进程名 = 文件名，用来查孤儿
     name = binary.name
 
@@ -225,6 +276,36 @@ def main(argv: list) -> int:
         if not cover.is_file() or cover.read_bytes() != EPUB_COVER_BYTES:
             _fail("the epub cover did not land next to the text: {}".format(cover))
         print("  cover     -> {} ({} bytes)".format(cover.name, cover.stat().st_size))
+
+        # pdf：默认**图片模式** —— 只收文件 + 数页数 + 取封面，文字要按需转换
+        _call(process, "import", {"path": str(_write_pdf_with_cover(books / "带封面的 PDF 小书.pdf"))})
+        shelf_now = _call(process, "list", {})["books"]
+        pdf_rows = [row for row in shelf_now if row["title"] == "带封面的 PDF 小书"]
+        if not pdf_rows:
+            _fail("the pdf did not reach the shelf: {}".format([row["title"] for row in shelf_now]))
+        pdf_row = pdf_rows[0]
+        # 图片模式：format / pages 都写上了，正文一个字都没抽（text_path 还空着）
+        if pdf_row["format"] != "pdf" or pdf_row["pages"] != 1 or pdf_row["text_path"]:
+            _fail("the pdf did not land in image mode: {}".format(pdf_row))
+        # 封面：/DCTDecode 原样搬走 → 落在 PDF 旁边的同名 .jpg
+        pdf_cover = pathlib.Path(pdf_row["file_path"]).with_suffix(".jpg")
+        if not pdf_cover.is_file() or pdf_cover.read_bytes() != PDF_COVER_BYTES:
+            _fail("the pdf cover did not land next to the file: {}".format(pdf_cover))
+        # 还没转换成文字：text 要给一条明确的错误，而不是回空正文
+        unconverted = _try(process, "text", {"book_id": pdf_row["id"], "count": 5})
+        if "error" not in unconverted or "not been converted" not in unconverted["error"]["message"]:
+            _fail("text on an unconverted pdf should say so: {}".format(unconverted))
+        print(
+            "  pdf       -> {} page(s), cover {}, text not parsed yet".format(
+                pdf_row["pages"], pdf_cover.name
+            )
+        )
+        # 「转换成文字」：抽文字层 → text 立刻读得到（跑的是随包内核里那段解析）
+        _call(process, "convert_pdf", {"book_id": pdf_row["id"]})
+        pdf_lines = _call(process, "text", {"book_id": pdf_row["id"], "start": 0, "count": 2})["lines"]
+        if not pdf_lines or pdf_lines[0] != "PDF smoke line":
+            _fail("unexpected pdf text after converting: {}".format(pdf_lines))
+        print("  convert   -> {!r}".format(pdf_lines[0]))
 
         # 3) 写回位置与阅读会话（GUI 退出时走的就是这条链）
         saved = _call(process, "position", {

@@ -1,11 +1,12 @@
 import { useState } from "react";
 
+import { BACK_KEY_LABEL } from "../lib/shortcuts";
 import Archived from "./Archived";
 import Data from "./Data";
 import Settings from "./Settings";
 
 /** 齿轮里的三个页签。 */
-type Tab = "settings" | "data" | "archived";
+export type Tab = "settings" | "data" | "archived";
 
 /** 页签的顺序与标签（设置在前：那是点开齿轮最常干的事）。 */
 const TABS: { id: Tab; label: string }[] = [
@@ -20,15 +21,20 @@ const TABS: { id: Tab; label: string }[] = [
  * 三个子页各自跟内核（`config_get` / `config_set`、`import` / `export` / `prune` /
  * `clear`）或壳层（归档列表 / 找回）打交道，这里只负责用一排页签切换它们，并提供
  * 右上角的「返回书架」。点「刷新」时给当前页换 `key`，让它重新载入。
+ *
+ * 当前页签是**受控的**（`tab` / `onTab` 从 `App.tsx` 来）：因为按 `G` 要能「切到设置」——
+ * 页签若藏在组件里，那边就只能整页关掉再打开，从「数据」页按 `G` 会莫名回到书架。
  */
 export default function Desk(props: {
   onBack: () => void;
   onLibraryChanged: () => void;
+  /** 现在停在哪一个页签 */
+  tab: Tab;
+  /** 点了别的页签 */
+  onTab: (tab: Tab) => void;
 }) {
   // 换 key 就重挂载当前页，等于让它重新拉一次数据
   const [nonce, setNonce] = useState(0);
-  // 当前页签（默认设置）
-  const [tab, setTab] = useState<Tab>("settings");
 
   return (
     <main className="container">
@@ -36,7 +42,7 @@ export default function Desk(props: {
         <h1>设置与数据</h1>
         <span className="dim">settings.toml · 导入 / 备份 / 维护 / 已归档</span>
         <button onClick={() => setNonce((value) => value + 1)}>刷新</button>
-        <button className="ghost back" onClick={props.onBack}>
+        <button className="ghost back" title={`返回书架（${BACK_KEY_LABEL}）`} onClick={props.onBack}>
           ← 返回书架
         </button>
       </header>
@@ -47,19 +53,19 @@ export default function Desk(props: {
           <button
             key={item.id}
             type="button"
-            className={`desk-tab${tab === item.id ? " active" : ""}`}
-            onClick={() => setTab(item.id)}
+            className={`desk-tab${props.tab === item.id ? " active" : ""}`}
+            onClick={() => props.onTab(item.id)}
           >
             {item.label}
           </button>
         ))}
       </nav>
 
-      {tab === "settings" ? <Settings key={`settings-${nonce}`} embedded /> : null}
-      {tab === "data" ? (
+      {props.tab === "settings" ? <Settings key={`settings-${nonce}`} embedded /> : null}
+      {props.tab === "data" ? (
         <Data key={`data-${nonce}`} embedded onLibraryChanged={props.onLibraryChanged} />
       ) : null}
-      {tab === "archived" ? (
+      {props.tab === "archived" ? (
         <Archived key={`archived-${nonce}`} embedded onLibraryChanged={props.onLibraryChanged} />
       ) : null}
     </main>

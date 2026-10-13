@@ -3,9 +3,10 @@ import { useCallback, useEffect, useState } from "react";
 import "./App.css";
 import { cachedShelf, coreVersion, resetCache, syncShelf } from "./lib/core";
 import { coreStamp } from "./lib/format";
+import { isTypingTarget, pageKeyAction, type ShortcutId } from "./lib/shortcuts";
 import type { BookRow } from "./lib/types";
 import Achievements from "./views/Achievements";
-import Desk from "./views/Desk";
+import Desk, { type Tab as DeskTab } from "./views/Desk";
 import Reader from "./views/Reader";
 import Shelf from "./views/Shelf";
 import Stats from "./views/Stats";
@@ -21,6 +22,18 @@ import Stats from "./views/Stats";
  */
 type Overlay = "stats" | "achievements" | "desk";
 
+/**
+ * 挂件页与快捷键的对应：按 `S` 开统计、`A` 开成就、`G` 开设置（齿轮那一页，默认就是「设置」标签）。
+ *
+ * 左列是 `lib/shortcuts.ts` 里的 id，右列是这里那个浮层的名字 —— 两边分开写是因为
+ * 「设置」在界面上其实叫 `desk`（齿轮里有设置 / 数据 / 已归档三个页签）。
+ */
+const OVERLAY_OF: Partial<Record<ShortcutId, Overlay>> = {
+  stats: "stats",
+  achievements: "achievements",
+  settings: "desk",
+};
+
 export default function App() {
   // 书架上的书（内核的 list 是唯一来源，缓存只是让它画得更快）
   const [books, setBooks] = useState<BookRow[]>([]);
@@ -31,20 +44,34 @@ export default function App() {
   const [open, setOpen] = useState<BookRow | null>(null);
   // 从墙上挂件展开的那一页；null = 书房本身
   const [overlay, setOverlay] = useState<Overlay | null>(null);
+  // 齿轮里停在哪个页签（受控：按 G 永远落在「设置」，见下面那个 effect）
+  const [deskTab, setDeskTab] = useState<DeskTab>("settings");
+  // 书房那把小锤子在不在手上：由书房报上来（`Shelf` 的 `onManageChange`）—— 它一被挂件页
+  // 顶掉就会重新挂载，所以这份状态得留在这里；去统计页看一眼再回来，手里还拿着锤子。
+  const [managing, setManaging] = useState(false);
 
-  /** Pull the shelf from the core and refresh the cache. */
-  const refresh = useCallback(async () => {
+  /**
+   * Pull the shelf from the core and refresh the cache.
+   *
+   * 返回**这次刷新之后的书单**：导入那边要拿它比出「刚进来的那几本」，
+   * 好把封面从篮子一格格飞过去（见 `components/ImportFlight.tsx`）。
+   * 出错回空数组 —— 调用方本来就只拿它当"有没有新书"看。
+   */
+  const refresh = useCallback(async (): Promise<BookRow[]> => {
     setBusy(true);
     try {
       // 先把缓存里的书架画出来（一瞬间），再问内核要权威数据
       setBooks(await cachedShelf());
       // 界面不再展示版本号：这次调用同时充当"内核还活着"的探针（起不来就进 catch）
       await coreVersion();
-      setBooks(await syncShelf(coreStamp(new Date())));
+      const fresh = await syncShelf(coreStamp(new Date()));
+      setBooks(fresh);
       setError("");
+      return fresh;
     } catch (err) {
-      // 内核起不来是这里最可能的情形：原样显示原因（一般是没装 wreader）
+      // 内核起不来是这里最可能的情形：原样显示原因
       setError(String(err));
+      return [];
     } finally {
       setBusy(false);
     }
@@ -75,11 +102,57 @@ export default function App() {
     setOverlay(null);
   }
 
+  /**
+   * 挂件页里的键盘快捷键（书房那一份在 `views/Shelf.tsx`；两边不会同时生效 ——
+   * 这一页开着时书房已经卸下了）。
+   *
+   * 四个键都是**「去哪儿」**，回程统一交给 `Esc`（三个页的返回按钮上都写着）：
+   *
+   * - `S` / `A` → 统计 / 成就；`G` → 设置（齿轮那一页，并把页签拨回「设置」——
+   *   从「数据」页按 `G` 也是切标签，不会把人送回书架）；`M` → 回书房并进管理模式。
+   *
+   * 哪个键算什么由 `lib/shortcuts.ts` 的 `pageKeyAction` 判定（纯函数，node 里钉过）；
+   * 这里只管落地。焦点在输入框里时除了 `Esc` 一概不抢 —— 设置页那些数字框要能正常打字。
+   */
+  useEffect(() => {
+    if (!overlay) return;
+    function onKeyDown(event: KeyboardEvent) {
+      const act = pageKeyAction(event);
+      if (!act) return;
+      if (act.action !== "back" && isTypingTarget(event.target as HTMLElement | null)) return;
+      event.preventDefault();
+      if (act.action === "back") {
+        setOverlay(null);
+        return;
+      }
+      if (act.action === "manage") {
+        // 回书房，并把那把锤子递到手上
+        setManaging(true);
+        setOverlay(null);
+        return;
+      }
+      const next = OVERLAY_OF[act.id];
+      if (!next) return;
+      // `G` 是「去设置」：落在齿轮里、页签也得是「设置」
+      if (act.id === "settings") setDeskTab("settings");
+      setOverlay(next);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [overlay]);
+
   // 阅读页是独占的：它有自己的顶栏与返回按钮，不显示书房
   if (open) {
     return (
       <Reader
         book={open}
+        // 页内改了这本书（PDF 转换成文字之后行数/字数/章节都变了）：把那一行重新同步回来，
+        // 阅读页拿到的分母才不会还是旧的
+        onBookChanged={async (bookId) => {
+          const fresh = await refresh();
+          const row = fresh.find((item) => item.id === bookId);
+          if (row) setOpen(row);
+        }}
         onClose={(reload) => {
           setOpen(null);
           // 读过之后书架上的进度/时长都变了，回去要刷新
@@ -107,7 +180,12 @@ export default function App() {
   if (overlay === "desk") {
     return (
       <div className="shell">
-        <Desk onBack={closeOverlay} onLibraryChanged={() => void refresh()} />
+        <Desk
+          onBack={closeOverlay}
+          onLibraryChanged={() => void refresh()}
+          tab={deskTab}
+          onTab={setDeskTab}
+        />
       </div>
     );
   }
@@ -120,11 +198,13 @@ export default function App() {
         busy={busy}
         error={error}
         onOpen={setOpen}
-        onSync={() => void refresh()}
+        onSync={() => refresh()}
         onReset={() => void clearCache()}
         onOpenStats={() => setOverlay("stats")}
         onOpenAchievements={() => setOverlay("achievements")}
         onOpenDesk={() => setOverlay("desk")}
+        initialManaging={managing}
+        onManageChange={setManaging}
       />
     </div>
   );
