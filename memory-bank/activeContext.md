@@ -265,6 +265,25 @@ JS 872.49 kB）；一个临时 SSR 冒烟（`/tmp/reader-bars-smoke.tsx`，走 V
 （渲染出的 `.reader-*` 类都有定义、新增的 6 条选择器都在）。**没装 Playwright，所以「看起来像不像书架」
 仍是手工一眼的事**：`npm run tauri dev` 开一本有正文的书、点屏幕中间呼出两栏即可。
 
+### 返工一次（当天第二次反馈）：点屏幕中间呼不出两栏
+
+**用户原话**：「点击屏幕中间无法呼出两栏了」。
+
+**根因**（我的 bug）：拆栏时把两栏的 `className` 写成了**死的字符串**
+（`className="bar reader-bar reader-bar-top"`），漏掉原来那句 `` ${barOpen ? " open" : ""} `` ——
+两栏于是永远停在「收着」的 `opacity: 0 + pointer-events: none + transform: 滑出屏幕` 上，点了不会有任何动静。
+**同一个坑在 `components/PdfReader.tsx` 也有一份**（它那颗顶栏**默认展开**，写死等于整条工具栏看不见）。
+
+**为什么当时的验证没抓住**（这次最该记住的一条）：SSR 冒烟与出图**都是手改字符串**把 `open` 塞进去，
+才看到两栏、才截到图 —— **手造的最终态正好把这个 bug 盖住了**。SSR 折不了状态，这两条检查本来就只能看
+「结构对不对」，不该由它替我造最终态。
+
+**修法与加固**：两处都绑回 `barOpen`；冒烟里补两条 ——「默认不带 `open`」+「`open` 由 `barOpen` 驱动」
+（SSR 折不了状态，只能查源码），并把 `PdfReader` 同一处也纳入；另加**一个 jsdom 真点击测试**
+（`/tmp/reader-bars-click.js`，**10 条 ALL OK**）：把 `Reader` 挂进 DOM → 点屏幕中间 → 断言两栏拿到 `open`、
+`inert` 被摘掉、容器挂上 `bars-open`；再点一下断言收起并重新 `inert`；再挂一次 `PdfReader` 断言
+「顶栏默认展开（有 `open`）+ 点那颗『×』收起」—— 也就是**这次的回归以后会被真点击抓住**。
+
 ## 本次改动（2026-10-13）：复核 Windows 安装包那条 CI 工作流
 
 **需求**：用户原话「Fix the following code in `.github/workflows/windows-installer.yml`」（问题清单是空的）。
@@ -2323,6 +2342,11 @@ TSX 给的 CSS 变量与 App.css 真正读的**逐一对得上** / 九个 `@keyf
 - **出图看带入场动画的东西要当心**：`animation` 的首帧（多半是 `opacity: 0`）会被 `qlmanage`
   停在原地，整块看着像「没渲染出来」—— 图稿里先 `animation: none` 再看（`.book-menu` 就这样
   白出过一张空图）。
+- **验交互的自动检查，别自己造最终态**（2026-10-13 的教训）：那天拆阅读页两栏时把 `className` 写死、
+  漏了 `` ${barOpen ? " open" : ""} ``，两栏永远收着 —— 而 SSR 冒烟与出图**都是手改字符串把 `open`
+  塞进去**的，正好把 bug 盖住，最后是用户点出来的（同一天 `PdfReader.tsx` 也有同一份）。所以：
+  结构检查只管「结构对不对」，**状态→外观这条链要真点一下**（`/tmp/reader-bars-click.js` 那种
+  jsdom 挂载 + `dispatchEvent` 的做法，10 条断言；本轮之后它守着这条回归）。
 - **`src-tauri/target/` 不是资产，是可回收的编译缓存**：2026-10-07 收尾时量到它有 **5.4 GB**
   （仓库总共 5.8 GB），其中大部分是几个月里依赖升升降降留下的**旧版本产物**（`debug/deps` 里
   4,321 个条目、光 `tauri` 同名 70 份），cargo 自己从不回收。`cd src-tauri && cargo clean`

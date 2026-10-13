@@ -1257,7 +1257,10 @@ export default function Reader(props: {
     >
       {/* 点屏幕中间同时呼出上下两栏（都是浮层，不占布局，书页不会跳）。
           上栏 = 「这本书现在在哪、要离开还是要换个看法」；读书时要用的家伙全在下栏。 */}
-      <header className="bar reader-bar reader-bar-top" inert={!barOpen}>
+      <header
+        className={`bar reader-bar reader-bar-top${barOpen ? " open" : ""}`}
+        inert={!barOpen}
+      >
         {/* 唯一的退出口：记账（位置 + 书签 + 时长 + 成就）之后再回书架 */}
         <button className="ghost" title="先记好读到哪，再回书架" onClick={() => void finish()}>
           ← 书架
@@ -1298,7 +1301,10 @@ export default function Reader(props: {
 
       {/* 下栏：读书时要用的家伙 —— 免手翻、目录与书签（2026-10-13 从上面搬下来的）、
           光点导读、排版、纸色与翻页设置。上栏管「这本书 / 我在哪」，下栏管「怎么读」 */}
-      <footer className="bar reader-bar reader-bar-bottom" inert={!barOpen}>
+      <footer
+        className={`bar reader-bar reader-bar-bottom${barOpen ? " open" : ""}`}
+        inert={!barOpen}
+      >
         {/* 免手翻：与终端按「a」同一个东西；节奏是下栏那颗「翻页设置」里那四个
             reader.auto_scroll_* */}
         <button

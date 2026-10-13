@@ -304,7 +304,10 @@ export default function PdfReader(props: {
     <div className="pdf-view">
       {/* 顶栏：默认展开（让「转换成文字」第一眼就看得见），按右上那颗按钮收起。
           位置类名 `.reader-bar-top` 与文字阅读页的上栏共用一套「呼出来的浮层」样式 */}
-      <header className="bar reader-bar reader-bar-top" inert={!barOpen}>
+      <header
+        className={`bar reader-bar reader-bar-top${barOpen ? " open" : ""}`}
+        inert={!barOpen}
+      >
         {/* 唯一的退出口：记账（位置 + 时长 + 成就）之后再回书架 */}
         <button className="ghost" onClick={() => void finish()}>
           ← 书架
