@@ -369,6 +369,8 @@ export default function PdfReader(props: {
             />
           ) : null}
         </div>
+        {/* 键盘：与文字阅读页同一套键位（这一页从前只吃鼠标滚轮） */}
+        <span className="dim reader-keys">↑ ↓ 挪一点 · ← → / 空格 滚一屏</span>
       </header>
 
       {/* 收起顶栏之后留一颗小按钮：不然「转换成文字」就没入口了 */}

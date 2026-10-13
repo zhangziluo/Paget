@@ -26,6 +26,14 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 /** How many pages on either side of the current one stay rendered. */
 const WINDOW = 3;
 
+/** 滚一屏的比例（留一点重叠，读起来不至于断在页缝里 —— 与文字阅读页同一个数）。 */
+const SCREEN_SCROLL_RATIO = 0.9;
+
+/** ↑ / ↓ 一次挪多少：视口高度的这个比例（图片模式没有「行」，按视口算最稳）。 */
+const NUDGE_RATIO = 0.12;
+/** 视口再矮也至少挪这么多像素，不然「按了没反应」。 */
+const NUDGE_MIN_PX = 40;
+
 export default function PdfPages(props: {
   document: PDFDocumentProxy;
   pages: number;
@@ -160,6 +168,53 @@ export default function PdfPages(props: {
     },
     [],
   );
+
+  // 键盘也能滚：↑ / ↓ 挪一小步、← / → / 空格 / PageDown 滚一屏、Shift+空格 / PageUp 往回滚。
+  //
+  // **键位与文字阅读页完全一致**（那边是 `.reader-keys` 写着的那三样），所以两种视图的手感一样。
+  // 从前这页只吃鼠标滚轮 —— 2026-10-14 用户反馈「PDF 模式下空格与上下方向键都不能滚」。
+  // 焦点在输入框 / 下拉框上时不抢（那是用户在打字 / 选项）；空格落在按钮上时也留给按钮自己按下。
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      const container = scrollRef.current;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName ?? "";
+      // 容器还没挂上 / 焦点在控件里：不抢
+      if (!container || tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      // 一屏 ≈ 视口高度的 90%；↑ ↓ 挪一小步（视口再矮也至少挪 40px）
+      const screen = Math.round(container.clientHeight * SCREEN_SCROLL_RATIO);
+      const nudge = Math.max(NUDGE_MIN_PX, Math.round(container.clientHeight * NUDGE_RATIO));
+      let delta = 0;
+      switch (event.key) {
+        case "ArrowDown":
+          delta = nudge;
+          break;
+        case "ArrowUp":
+          delta = -nudge;
+          break;
+        case "PageDown":
+        case "ArrowRight":
+          delta = screen;
+          break;
+        case "PageUp":
+        case "ArrowLeft":
+          delta = -screen;
+          break;
+        case " ":
+          // 焦点在按钮上时，空格是「按下那枚按钮」，不是滚屏
+          if (tag === "BUTTON") return;
+          delta = event.shiftKey ? -screen : screen;
+          break;
+        default:
+          return;
+      }
+      // 自己滚（别让浏览器再把外层也滚一下）
+      event.preventDefault();
+      container.scrollBy({ top: delta });
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div className="pdf-scroll" ref={scrollRef} onScroll={handleScroll}>
