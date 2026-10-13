@@ -150,9 +150,13 @@ Paget 不 import 它，只在运行期拉起 `python -m wreader.serve`（JSON-RP
 npm install                                   # 前端依赖
 npm run tauri dev                             # 开发（前端热更新 + Rust 自动重编）
 npm run build                                 # tsc + vite build（只构建前端）
-cd src-tauri && cargo test                    # 壳层测试（45 项，含真拉内核的契约测试）
+cd src-tauri && cargo test                    # 壳层测试（52 项，含真拉内核的契约测试）
 cd src-tauri && cargo test <名字>             # 只跑一个
 git log --oneline                             # 本地历史（2026-10-05 起有；无远端）
+
+# 开发数据（书架上默认只有一本《Paget 使用手册》，见 README 的「跑起来」）
+python3 packaging/seed_dev_shelf.py           # 把开发书架恢复成「只有这本手册」（时长与成就留着）
+python3 packaging/seed_dev_shelf.py --keep-others   # 只补手册，不动别的书
 
 # 打包 · macOS / Linux
 packaging/build-core.sh                       # 冻结内核（打包前必跑；--no-smoke 跳过校验）

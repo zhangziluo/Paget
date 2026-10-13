@@ -40,6 +40,23 @@ packaging/build-core.sh  # 冻结内核（打包前必须先跑一次）
 npm run tauri build -- --ignore-version-mismatches   # 打包成 .app / .dmg
 ```
 
+### 开发用的书架：默认只有一本《Paget 使用手册》
+
+`npm run tauri dev` 打开书架，上面默认只有一本 **《Paget 使用手册》**（源文件 `docs/Paget 使用手册.txt`，
+412 行 / 13 章）—— 讲的就是这个软件自己怎么用：书房与导入、阅读页上下两栏、键位总表、纸面与光点、
+免手翻、PDF、统计与成就、设置与数据、限时与封印、常见问题。开发时想「对着界面读文档」，这样最省事。
+
+删过头了、或者想把它恢复成「只有这一本」的样子：
+
+```bash
+python3 packaging/seed_dev_shelf.py                 # 清掉别的书，只留手册（阅读时长与成就留着）
+python3 packaging/seed_dev_shelf.py --keep-others   # 只补手册，不动别的书
+```
+
+它只动**开发数据**（`<repo>/.wreader/`，也就是 debug 构建用的那一份）：一旦目标像是
+「装出去的 app 的数据目录」会先拦一下，要 `--force` 才动手 —— 那里面是用户的书。
+清书与导书都走内核（`clear` / `import` / `set_meta`），不自己去改 `library.json`。
+
 内核怎么被找到（`core_client.rs` 的 `CoreCommand::resolve`，按顺序）：
 
 1. `$PAGET_CORE_COMMAND` —— 整条命令行，例如 `paget-core --stdio`；
