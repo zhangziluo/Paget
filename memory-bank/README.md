@@ -50,9 +50,9 @@
 ## 本目录现状（2026-10-05 建库快照；规模与验证两行 2026-10-07 复核）
 
 - 建立于 **2026-10-05**，由当时的会话依据实际代码、`cargo test` 与 `tsc --noEmit` 生成。
-- 规模实测（2026-10-13 复核，随第三十轮「阅读页拆成上下两栏」再核一遍）：
-  `src/`（TS/TSX）**13,533 行 / 41 个文件**、`src/`（CSS）**8,308 行 / 9 个文件**
-  （`App.css` 5,572 + `styles/manage-mode.css` 562 + `styles/settings-page.css` 525 +
+- 规模实测（2026-10-13 复核，随第三十 / 三十一轮再核一遍）：
+  `src/`（TS/TSX）**13,533 行 / 41 个文件**、`src/`（CSS）**8,332 行 / 9 个文件**
+  （`App.css` 5,572 + `styles/manage-mode.css` 586 + `styles/settings-page.css` 525 +
   `styles/stats-page.css` 516 + `styles/achievements.css` 503 + `styles/sticky-note.css` 288 +
   `styles/pdf-pages.css` 130 + `styles/reader-config.css` 122 + `styles/auto-turn.css` 90），
   另有资产 `src/assets/`（`wood-texture.svg` 21 行 / 1.5 kB、`guide-wave.svg` 19 行 / 1.2 kB）。

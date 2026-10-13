@@ -62,7 +62,7 @@
   align-items: center;
   gap: 0.55rem;
   max-width: min(94vw, 74rem);
-  padding: 0.4rem 0.6rem 0.4rem 0.8rem;
+  padding: 0.5rem 0.65rem 0.5rem 0.85rem;
   border: 1px solid rgba(140, 105, 60, 0.32);
   border-radius: 0.7rem;
   color: var(--ink);
@@ -168,16 +168,40 @@
   align-items: center;
   gap: 0.35rem;
   overflow-x: auto;
-  padding: 0.1rem 0.15rem;
   /* 动作多了就横向滚，别把管理条撑破 */
   max-width: min(56vw, 46rem);
+  /* ⚠️ 底下这一圈内边距是**给横向滚动条留的位置**：不留的话滚动条就压在按钮文字上
+     （macOS 那种浮层滚动条尤其明显 —— 2026-10-13 用户反馈「长条高度有点窄，滚动条遮住了
+     一部分文字」）。滚动条高 0.5rem，这里留 0.6rem，正好让它落在文字下面还有一点缝 */
+  padding: 0.15rem 0.15rem 0.6rem;
+}
+
+/* 滚动条自己画细一点：与阅读页那根同一个做法（圆头 + 透明边 + 木色）。
+   画了样式它就不再是「浮层」，会正式占位 —— 上面那圈 padding 就是给它腾的地方 */
+.manage-batch::-webkit-scrollbar {
+  height: 0.5rem;
+}
+
+.manage-batch::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-color: rgba(120, 90, 50, 0.4);
+  background-clip: content-box;
+}
+
+.manage-batch::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(120, 90, 50, 0.6);
+}
+
+.manage-batch::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .manage-action,
 .manage-select-toggle,
 .manage-back {
   flex: 0 0 auto;
-  padding: 0.26rem 0.6rem;
+  padding: 0.32rem 0.68rem;
   border: 1px solid rgba(120, 90, 50, 0.45);
   border-radius: 0.45rem;
   font: inherit;
