@@ -11,6 +11,7 @@ import BookTransition, { type SpineRect } from "../components/BookTransition";
 import BookshelfManager from "../components/BookshelfManager";
 import ImportFlight from "../components/ImportFlight";
 import ImportPickMenu, { type ImportPickAnchor } from "../components/ImportPickMenu";
+import { Plush } from "../components/Plush";
 import { SEAL_TOAST_TEXT, SealDissolve, SealToast } from "../components/SealEffect";
 import StickyNoteNav from "../components/StickyNoteNav";
 import {
@@ -30,6 +31,7 @@ import {
 } from "../lib/core";
 import { generatedCover, parseCoverSpec, type CoverSpec } from "../lib/coverGenerator";
 import { expiredBooks, localDay, readDeadlines, writeDeadlines } from "../lib/deadlines";
+import { AMBIENT_TRACKS, type AmbientState, type AmbientTrackId } from "../lib/ambient";
 import { coreStamp } from "../lib/format";
 import { IMPORT_FLIGHT_KEY, normalizeImportFlight } from "../lib/importFlight";
 import {
@@ -65,6 +67,7 @@ import {
   type ManageRename,
 } from "../lib/shelfManage";
 import { shortcutFrom, shortcutKey } from "../lib/shortcuts";
+import { useSky } from "../lib/sky";
 import {
   DEFAULT_TOY_SETTINGS,
   TOY_GAP_MAX,
@@ -165,82 +168,11 @@ function Clock() {
   );
 }
 
-/** 天亮 / 天黑的分界（按系统时间）：6 点天亮，18 点天黑。 */
-const DAY_START = 6;
-const NIGHT_START = 18;
+/* 天亮 / 天黑（`skyOf`）与 `useSky` 挪去了 `lib/sky.ts`：白噪音按时钟选声音
+   用的是同一套判断，两处各写一份迟早会跑偏。 */
 
-/** 白天还是夜里。 */
-type Sky = "day" | "night";
-
-/** 看系统时间决定现在是白天还是夜里。 */
-function skyOf(date: Date): Sky {
-  const hour = date.getHours();
-  return hour < DAY_START || hour >= NIGHT_START ? "night" : "day";
-}
-
-/**
- * 书房的天色：窗外的天空、整间屋子的明暗、台灯亮不亮，全都跟着它走。
- *
- * 半小时对一次表就够（天色是慢慢变的，不用每秒重算），返回的字符串直接当
- * `main` 上的类名用，CSS 里写 `.study.day` / `.study.night` 两套。
- */
-function useSky(): Sky {
-  const [sky, setSky] = useState<Sky>(() => skyOf(new Date()));
-  useEffect(() => {
-    const id = window.setInterval(() => setSky(skyOf(new Date())), 30_000);
-    return () => window.clearInterval(id);
-  }, []);
-  return sky;
-}
-
-/**
- * 一只毛绒玩具的骨架：尾巴 → 身子（含浅色肚皮）→ 四肢 → 耳朵 → 头（缝线 + 点眼 + 鼻子）。
- *
- * 这里只摆结构，具体长什么样完全交给 CSS 的 `.plush-<id>`（见 App.css）——
- * 和留声机、收音机一样是纯 CSS 塑形，不用任何图片。
- * 传了 *label* 就是一张有名字的图（书架上的那只）；不传就当纯装饰（面板里的小图标）。
- *
- * **只有「朝前」一种造型** —— 从前还能朝左 / 朝右 / 朝后（`data-facing` 换一套画法），
- * 2026-10-10 按用户要求把那三面去掉了，所以那个属性也没了。
- */
-function Plush(props: { id: string; label?: string }) {
-  return (
-    <span
-      className={`plush plush-${props.id}`}
-      role={props.label ? "img" : undefined}
-      aria-label={props.label}
-      aria-hidden={props.label ? undefined : true}
-    >
-      {/* 尾巴：从身子后面探出来 */}
-      <span className="plush-tail" />
-      {/* 身子 + 浅色肚皮（一眼看出"有身体"） */}
-      <span className="plush-body">
-        <span className="plush-belly" />
-      </span>
-      {/* 前爪（猫头鹰是翅膀、乌龟是前鳍） */}
-      <span className="plush-arm l" />
-      <span className="plush-arm r" />
-      {/* 后脚（乌龟是后鳍） */}
-      <span className="plush-leg l" />
-      <span className="plush-leg r" />
-      {/* 头 + 耳朵绑成一组：管理模式下抬头 / 转头 / 缩头都动这一层 ——
-          头和耳朵因此永远是一个整体（见 App.css 的 `.plush-head-group`）。
-          这一层本身不画东西，尺寸与 `.plush` 一致，所以里面的定位一字不变。 */}
-      <span className="plush-head-group">
-        {/* 耳朵（乌龟没有耳朵，CSS 里藏掉） */}
-        <span className="plush-ear l" />
-        <span className="plush-ear r" />
-        {/* 头：缝线、点眼、鼻子都在脸上 */}
-        <span className="plush-head">
-          <span className="plush-stitch" />
-          <span className="plush-eye l" />
-          <span className="plush-eye r" />
-          <span className="plush-snout" />
-        </span>
-      </span>
-    </span>
-  );
-}
+/* 毛绒玩具的骨架（`Plush`）2026-10-24 挪去了 `components/Plush.tsx`：
+   阅读页右下角蹦出来的那只也要用同一套造型，两边一起 import。 */
 
 /**
  * 换玩偶的小面板（挂在玩具那一格里、从它上方弹出，样式见 App.css 的 `.toy-picker`）：
@@ -311,6 +243,71 @@ export function ToyPicker(props: {
     </div>
   );
 }
+
+/**
+ * 留声机的曲目面板：点一下留声机，从机器**下方**弹出的小卡片。
+ * 最上面一行是开 / 关，接着是九首（中间一条细隔线），最后一项「按昼夜自动」。
+ * 当前选中的那一首亮着；正在响的那一首左边有一条暖色竖线（自动模式下也看得见）。
+ *
+ * 单拆出来和 `ToyPicker` 同一个道理：面板挂在组件内部 state 上（平时收着），
+ * 不拆就只有出图能看。**面板自己不碰 localStorage** —— 开没开、选哪首是
+ * `lib/ambient` 的事，这里只管画与回调。
+ */
+export function AmbientPicker(props: {
+  on: boolean;
+  mode: AmbientState["mode"];
+  playing: boolean;
+  current: AmbientTrackId | null;
+  onToggle: () => void;
+  onSelect: (id: AmbientTrackId) => void;
+  onAuto: () => void;
+}) {
+  const auto = props.mode.kind === "auto";
+  return (
+    <div className="ambient-picker" role="group" aria-label="书房的声音">
+      <button
+        type="button"
+        className={`ambient-choice ambient-power${props.on ? " active" : ""}`}
+        aria-pressed={props.on}
+        title={props.on ? "关掉书房的声音" : "打开书房的声音"}
+        onClick={props.onToggle}
+      >
+        <span className="ambient-power-dot" aria-hidden="true" />
+        <span className="ambient-name">{props.on ? "声音：开" : "声音：关"}</span>
+      </button>
+      <span className="ambient-rule" aria-hidden="true" />
+      {AMBIENT_TRACKS.map((track) => {
+        const picked = props.mode.kind === "track" && props.mode.track === track.id;
+        const sounding = props.playing && props.current === track.id;
+        return (
+          <button
+            key={track.id}
+            type="button"
+            className={`ambient-choice${picked ? " active" : ""}${sounding ? " sounding" : ""}`}
+            aria-pressed={picked}
+            title={`播放「${track.label}」（单曲循环）`}
+            onClick={() => props.onSelect(track.id)}
+          >
+            <span className="ambient-name">{track.label}</span>
+            {track.hint ? <span className="ambient-hint">{track.hint}</span> : null}
+          </button>
+        );
+      })}
+      <span className="ambient-rule" aria-hidden="true" />
+      <button
+        type="button"
+        className={`ambient-choice${auto ? " active" : ""}`}
+        aria-pressed={auto}
+        title="跟着昼夜走：白天风铃流水，夜里两段虫鸣交替"
+        onClick={props.onAuto}
+      >
+        <span className="ambient-name">按昼夜自动</span>
+        <span className="ambient-hint">白天 / 夜里</span>
+      </button>
+    </div>
+  );
+}
+
 
 /**
  * 一格书：现在只剩书脊（阅读数据搬进了右键菜单的「阅读统计 / 属性」）。
@@ -515,13 +512,31 @@ export default function Shelf(props: {
   onOpenStats: () => void;
   onOpenAchievements: () => void;
   onOpenDesk: () => void;
+  /**
+   * 沉浸模式：书、统计 / 成就 / 设置、导入与右上角那些小圆钮全部停用，
+   * **只留管理模式**（锤子 / `M`）能整理书架。
+   */
+  immersive: boolean;
+  /** 墙上那枚「沉浸」贴纸点一下：开 / 关沉浸模式（状态在 `App.tsx`） */
+  onToggleImmersive: () => void;
   /** 进书房时是不是直接落在管理模式（`App.tsx` 记着上一次的状态，见 `onManageChange`） */
   initialManaging?: boolean;
   /** 管理模式开 / 关都报一声：`App.tsx` 记住它，去统计页看一眼再回来手里还拿着那把锤子 */
   onManageChange?: (managing: boolean) => void;
+  /**
+   * 白噪音（应用级，见 `lib/ambient.ts`）：开没开、该放哪段、真的在响没有、怎么切。
+   * 书房只拿它画**架子上那台留声机** —— 点一下开 / 关，响着的时候喇叭口有一圈呼吸。
+   */
+  ambient: AmbientState;
 }) {
   // 白天 / 夜里：窗外的天色、屋子的明暗、台灯都按它切换
   const sky = useSky();
+  // 留声机那格的提示语：点一下弹出曲目面板（开关也在面板顶上）
+  const gramophoneHint = props.immersive
+    ? "沉浸模式：留声机先不响"
+    : props.ambient.on
+      ? `留声机：白噪音开着（现在放「${props.ambient.label}」）—— 点一下选曲 / 开关`
+      : "留声机：白噪音关着 —— 点一下选曲或打开";
   // 点开一本书的过场：点的是哪本、封面怎么画、书脊在哪（null = 没在过场）
   const [stage, setStage] = useState<Stage | null>(null);
   // 搜索：遮罩是否打开、输入的关键词、回车后要高亮的书 id
@@ -626,12 +641,28 @@ export default function Shelf(props: {
     };
   }, []);
 
+  // 沉浸模式一开，把书架上所有「另一页 / 选项」的浮层都收掉：搜索、右键菜单、玩偶面板、
+  // 导入菜单（正常路径点不到它们 —— 贴纸在墙上，不在这些遮罩下面；这里只是兜底，
+  // 免得以后哪个入口改成键盘打开时漏过去）。
+  useEffect(() => {
+    if (!props.immersive) return;
+    setSearchOpen(false);
+    setTerm("");
+    setMenu(null);
+    setToyPicker(false);
+    setGramoOpen(false);
+    setPickAnchor(null);
+  }, [props.immersive]);
+
   // 摆件架上那几只玩偶：每只各自放不放（本机 localStorage，见 lib/toyPrefs）
   const [toys, setToys] = useState<ToySettings>(loadToySettings);
   // 相邻两只之间的间距（rem，本机；摆上两只以上才在面板里露出来）
   const [toyGap, setToyGap] = useState<number>(loadToyGap);
   const [toyPicker, setToyPicker] = useState(false);
   const toyRef = useRef<HTMLLIElement | null>(null);
+  // 留声机的曲目面板（2026-10-22）：点一下机器弹出来，点外面 / Esc 收起
+  const [gramoOpen, setGramoOpen] = useState(false);
+  const gramoRef = useRef<HTMLLIElement | null>(null);
   // 架子上摆着哪几只（按名单顺序）—— 书架渲染就照这个摆
   const placed = placedToys(toys);
 
@@ -680,6 +711,33 @@ export default function Shelf(props: {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [toyPicker]);
+  // 留声机面板打开时：点机器 / 面板外或按 Esc 收起（与玩偶面板一个规矩）
+  useEffect(() => {
+    if (!gramoOpen) return;
+    function onPointerDown(event: MouseEvent) {
+      if (
+        gramoRef.current &&
+        event.target instanceof Node &&
+        gramoRef.current.contains(event.target)
+      ) {
+        return;
+      }
+      setGramoOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setGramoOpen(false);
+      }
+    }
+    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [gramoOpen]);
+
 
   // 启动时把置顶列表读回来
   useEffect(() => {
@@ -1567,6 +1625,8 @@ export default function Shelf(props: {
           target.tagName === "TEXTAREA" ||
           target.isContentEditable);
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        // 沉浸模式里搜索也收起来：只留整理书架这一件事
+        if (props.immersive) return;
         event.preventDefault();
         setSearchOpen(true);
         return;
@@ -1574,6 +1634,8 @@ export default function Shelf(props: {
       // 单键快捷键：M 管理模式 / S 统计 / A 成就 / G 设置（输入框里打字时、界面开着东西时不抢）
       const shortcut = shortcutFrom(event);
       if (shortcut && !typing && !overlayOpen) {
+        // 沉浸模式里只有 `M`（管理模式）还算数；S / A / G 一概不响应
+        if (shortcut !== "manage" && props.immersive) return;
         event.preventDefault();
         if (shortcut === "manage") toggleManage();
         else if (shortcut === "stats") props.onOpenStats();
@@ -1606,6 +1668,8 @@ export default function Shelf(props: {
         return;
       }
       if (event.key === "/" && !typing && !searchOpen) {
+        // 沉浸模式里 `/` 也不再唤出搜索
+        if (props.immersive) return;
         event.preventDefault();
         setSearchOpen(true);
       }
@@ -1614,9 +1678,9 @@ export default function Shelf(props: {
     return () => window.removeEventListener("keydown", onKeyDown);
     // 一变就重新订阅，闭包才是新的：searchOpen / stage / overlayOpen 管「界面开着什么」，
     // totalPages / current 管翻屏该往哪儿翻，managing 管 M 那把锤子是开还是关，
-    // picked 管方向键是「挪东西」还是「翻屏」
+    // picked 管方向键是「挪东西」还是「翻屏」，immersive 管 S / A / G 与搜索还认不认
     // （cancelSearch 只用三个 setState，不会过期，不必列；nudgePicked 走 nudgeRef）
-  }, [overlayOpen, searchOpen, stage, totalPages, current, managing, picked]);
+  }, [overlayOpen, searchOpen, stage, totalPages, current, managing, picked, props.immersive]);
 
   /** 指针进入窗口左右两侧的窄带就亮出翻页箭头，回到中间就收起来。 */
   function trackPointer(event: React.MouseEvent) {
@@ -1636,6 +1700,8 @@ export default function Shelf(props: {
    * 点完某一项它就该没了。
    */
   async function doImport(mode: ImportPickMode = "files") {
+    // 沉浸模式：导入也停用（它不属于「整理书架」）
+    if (props.immersive) return;
     setPickAnchor(null);
     setImporting(true);
     setImportNotice("");
@@ -1729,6 +1795,8 @@ export default function Shelf(props: {
    */
   const openBook = useCallback(
     (book: BookRow, origin: SpineRect) => {
+      // 沉浸模式：书打不开（要退出就点墙上那枚「沉浸」贴纸）
+      if (props.immersive) return;
       // 续读（有进度）就直接进阅读页，不看过场 —— 一行判完
       if (hasProgress(book)) {
         props.onOpen(book);
@@ -1740,13 +1808,17 @@ export default function Shelf(props: {
       // 同时去壳层问一句有没有真封面图 / 上次缓存的方案（不挡动画）
       void resolveCover(book, spec);
     },
-    [props.onOpen, resolveCover],
+    [props.onOpen, props.immersive, resolveCover],
   );
 
   /** 右键 / 长按弹出的菜单：回调要稳定（见 `BookSpine` 的 `memo`）。 */
   const openMenu = useCallback(
-    (book: BookRow, x: number, y: number) => setMenu({ book, x, y }),
-    [],
+    (book: BookRow, x: number, y: number) => {
+      // 沉浸模式：右键菜单里全是「另一页 / 选项」，一概不弹
+      if (props.immersive) return;
+      setMenu({ book, x, y });
+    },
+    [props.immersive],
   );
 
   /**
@@ -1794,7 +1866,7 @@ export default function Shelf(props: {
       // main = 主屏（书房全景：窗 + 挂件栏 + 摆件栏 + 一排书）；shelves = 第二屏起（整面书架，只有书）
       className={`container study ${sky}${current === 0 ? " main" : " shelves"}${
         managing ? " manage" : ""
-      }${selecting ? " select-mode" : ""}`}
+      }${selecting ? " select-mode" : ""}${props.immersive ? " immersive" : ""}`}
       onMouseMove={trackPointer}
       onMouseLeave={() => setEdge("")}
     >
@@ -1814,8 +1886,9 @@ export default function Shelf(props: {
         <span className="window-bar h" />
       </div>
 
-      {/* 墙上那一栏：三枚便利贴（统计 / 成就 / 设置）、数字时钟、右上角那排小圆钮。
-          便利贴的文案是生活化的（「日记」「勋章」「调一调」），真名与快捷键写在悬停提示里；
+      {/* 墙上那一栏：四枚便利贴（统计 / 成就 / 设置 / 沉浸）、数字时钟、右上角那排小圆钮。
+          便利贴的文案是生活化的（「日记」「勋章」「调一调」「沉浸」），真名与快捷键写在悬停提示里；
+          沉浸模式下前三枚灰掉，只有「沉浸」自己与整理书架还能用。
           长什么样、怎么拖、怎么撕下 / 贴回全在 `components/StickyNoteNav.tsx` */}
       <div className="study-wall">
         <StickyNoteNav
@@ -1826,6 +1899,7 @@ export default function Shelf(props: {
               realName: "统计",
               shortcut: "stats",
               onClick: props.onOpenStats,
+              disabled: props.immersive,
             },
             {
               id: "achievements",
@@ -1833,6 +1907,7 @@ export default function Shelf(props: {
               realName: "成就",
               shortcut: "achievements",
               onClick: props.onOpenAchievements,
+              disabled: props.immersive,
             },
             {
               id: "settings",
@@ -1840,6 +1915,18 @@ export default function Shelf(props: {
               realName: "设置与数据",
               shortcut: "settings",
               onClick: props.onOpenDesk,
+              disabled: props.immersive,
+            },
+            {
+              id: "immersive",
+              text: "沉浸",
+              realName: props.immersive
+                ? "沉浸模式已开启：只能整理书架，点一下退出"
+                : "沉浸模式：只留下书架，书和设置都点不开（还能整理书架）",
+              // 它不打开另一页：点一下立刻切换，贴纸留在墙上（见 `StickyNoteNav` 的 `toggle`）
+              toggle: true,
+              active: props.immersive,
+              onClick: props.onToggleImmersive,
             },
           ]}
         />
@@ -1866,26 +1953,43 @@ export default function Shelf(props: {
           <button
             type="button"
             className="icon-button"
-            title={props.busy ? "同步中…" : "重新同步"}
+            title={
+              props.immersive
+                ? "沉浸模式：重新同步先不做"
+                : props.busy
+                  ? "同步中…"
+                  : "重新同步"
+            }
             onClick={props.onSync}
-            disabled={props.busy}
+            disabled={props.busy || props.immersive}
           >
             ⟳
           </button>
           <button
             type="button"
             className="icon-button"
-            title="清空本地缓存（下次启动会从内核重建）"
+            title={
+              props.immersive
+                ? "沉浸模式：清缓存先不做"
+                : "清空本地缓存（下次启动会从内核重建）"
+            }
             onClick={props.onReset}
-            disabled={props.busy}
+            disabled={props.busy || props.immersive}
           >
             ♻
           </button>
           <button
             type="button"
             className={`icon-button search-toggle${searchOpen ? " active" : ""}`}
-            title={searchOpen ? "关闭搜索（Esc）" : "搜索（/ 或 ⌘K）"}
+            title={
+              props.immersive
+                ? "沉浸模式：搜索先收起来"
+                : searchOpen
+                  ? "关闭搜索（Esc）"
+                  : "搜索（/ 或 ⌘K）"
+            }
             onClick={() => (searchOpen ? cancelSearch() : setSearchOpen(true))}
+            disabled={props.immersive}
           >
             {searchOpen ? "✕" : "🔍"}
           </button>
@@ -1917,31 +2021,69 @@ export default function Shelf(props: {
           </li>
           {/* 留声机：台阶式木箱（顶板上平躺着一张黑胶 + 一根弯脖子唱臂，右侧面一支摇柄）+
               从箱体左上角升起来、拐个弯再张开成花瓣口的一支大铜喇叭。
-              零件顺序就是遮挡顺序，坐标全在 App.css 的 .g-* 一节里逐件量过 */}
-          <li className="decor-item gramophone" title="留声机（以后会加入音频播放）">
-            <span className="g-foot" />
-            <span className="g-foot" />
-            <span className="g-plinth" />
-            <span className="g-step" />
-            <span className="g-base" />
-            <span className="g-plaque" />
-            <span className="g-top" />
-            <span className="g-disc" />
-            <span className="g-stud" />
-            <span className="g-crank-shaft" />
-            <span className="g-crank-arm" />
-            <span className="g-crank-grip" />
-            <span className="g-arm-stem" />
-            <span className="g-arm-head" />
-            <span className="g-arm-pivot" />
-            <span className="g-collar" />
-            <span className="g-collar-tab" />
-            <span className="g-pipe" />
-            <span className="g-collar-ring" />
-            <span className="g-flare" />
-            <span className="g-elbow" />
-            <span className="g-ferrule" />
-            <span className="g-mouth" />
+              零件顺序就是遮挡顺序，坐标全在 App.css 的 .g-* 一节里逐件量过。
+              点一下机器 = 弹出曲目面板（开 / 关就在面板顶上，见上面的 `AmbientPicker`）；
+              面板节点也挂在这一格里，打开时 `.gramo-open` 把整格抬高到书排之上 */}
+          <li
+            className={`decor-item gramophone${props.ambient.playing ? " playing" : ""}${
+              gramoOpen ? " gramo-open" : ""
+            }`}
+            ref={gramoRef}
+          >
+            {/* 整台机器包在按钮里，按钮铺满格子 —— `.g-*` 那些 `left/bottom` 的坐标原点是
+                最近的定位祖先，按钮用 `position: absolute; inset: 0`，原点与格子重合，
+                所有零件一个坐标都不用动。 */}
+            <button
+              type="button"
+              className="gramo-button"
+              aria-label={gramophoneHint}
+              aria-haspopup="true"
+              aria-expanded={gramoOpen}
+              title={gramophoneHint}
+              onClick={() => setGramoOpen((open) => !open)}
+              disabled={props.immersive}
+            >
+              <span className="g-foot" />
+              <span className="g-foot" />
+              <span className="g-plinth" />
+              <span className="g-step" />
+              <span className="g-base" />
+              <span className="g-plaque" />
+              <span className="g-top" />
+              <span className="g-disc" />
+              <span className="g-stud" />
+              <span className="g-crank-shaft" />
+              <span className="g-crank-arm" />
+              <span className="g-crank-grip" />
+              <span className="g-arm-stem" />
+              <span className="g-arm-head" />
+              <span className="g-arm-pivot" />
+              <span className="g-collar" />
+              <span className="g-collar-tab" />
+              <span className="g-pipe" />
+              <span className="g-collar-ring" />
+              <span className="g-flare" />
+              <span className="g-elbow" />
+              <span className="g-ferrule" />
+              <span className="g-mouth" />
+            </button>
+            {gramoOpen ? (
+              <AmbientPicker
+                on={props.ambient.on}
+                mode={props.ambient.mode}
+                playing={props.ambient.playing}
+                current={props.ambient.current}
+                onToggle={props.ambient.toggle}
+                onSelect={(id) => {
+                  props.ambient.selectTrack(id);
+                  setGramoOpen(false);
+                }}
+                onAuto={() => {
+                  props.ambient.selectAuto();
+                  setGramoOpen(false);
+                }}
+              />
+            ) : null}
           </li>
           {/* 收音机：圆角木壳 +（左）横百叶的喇叭格栅 +（右）表盘、四个铜旋钮 + 四只木脚。
              里面那几个小件（旋钮、小铭牌）的位置在 App.css 里按「第几个孩子」排 */}
@@ -1981,12 +2123,15 @@ export default function Shelf(props: {
               type="button"
               className="toy-button"
               title={
-                placed.length
-                  ? `毛绒玩具：${placed.map((item) => item.label).join("、")}（点一下收放）`
-                  : "摆上毛绒玩具"
+                props.immersive
+                  ? "沉浸模式：玩偶摆法先不调"
+                  : placed.length
+                    ? `毛绒玩具：${placed.map((item) => item.label).join("、")}（点一下收放）`
+                    : "摆上毛绒玩具"
               }
               aria-expanded={toyPicker}
               onClick={() => setToyPicker((open) => !open)}
+              disabled={props.immersive}
             >
               <span
                 className="toy-row"
@@ -2049,9 +2194,17 @@ export default function Shelf(props: {
                 <button
                   type="button"
                   className="add-book"
-                  title="导入电子书"
-                  aria-label={importing ? "正在导入电子书" : "导入电子书"}
+                  title={props.immersive ? "沉浸模式：导入先收起来（只留整理书架）" : "导入电子书"}
+                  aria-label={
+                    props.immersive
+                      ? "沉浸模式不能导入电子书"
+                      : importing
+                        ? "正在导入电子书"
+                        : "导入电子书"
+                  }
                   onClick={() => {
+                    // 沉浸模式：导入也停用（它不属于「整理书架」）
+                    if (props.immersive) return;
                     // Windows / Linux：先问一句「文件还是文件夹」（那两个平台的原生对话框
                     // 不能同框多选，见 ImportPickMenu）；macOS 一按就开面板，与从前一样。
                     const box = basketRef.current?.getBoundingClientRect();
@@ -2066,7 +2219,7 @@ export default function Shelf(props: {
                     }
                     void doImport();
                   }}
-                  disabled={importing}
+                  disabled={importing || props.immersive}
                 >
                   {/* 藤条篮子（纯装饰）：先在后沿挂上提手，再插进那本书与几张残页，
                       最后盖上篮身与收边 —— 后画的挡住先画的，看着才是「从篮口探出来」 */}
@@ -2081,7 +2234,7 @@ export default function Shelf(props: {
                   </span>
                   {/* 这行小字平时藏着，鼠标移上去（或正在导入）才浮出来 —— 它其实是个按钮 */}
                   <span className="add-hint" aria-hidden="true">
-                    {importing ? "导入中…" : "导入电子书"}
+                    {props.immersive ? "沉浸中不可导入" : importing ? "导入中…" : "导入电子书"}
                   </span>
                 </button>
               </li>
@@ -2126,7 +2279,9 @@ export default function Shelf(props: {
       ))}
       {props.books.length === 0 ? (
         <p className="dim empty-hint">
-          书架是空的 —— 点书架左边那只藤条篮子导入电子书，或者点右上角的 ⟳ 重新同步。
+          {props.immersive
+            ? "沉浸模式：导入先收起来了 —— 点墙上那枚「沉浸」贴纸退出后再导入。"
+            : "书架是空的 —— 点书架左边那只藤条篮子导入电子书，或者点右上角的 ⟳ 重新同步。"}
         </p>
       ) : null}
       {props.books.length > 0 && visible.length === 0 ? (
@@ -2252,7 +2407,10 @@ export default function Shelf(props: {
           canFinish={canFinish}
           canRemove={canRemove}
           onClose={() => setMenu(null)}
-          onContinue={() => props.onOpen(menu.book)}
+          onContinue={() => {
+            if (props.immersive) return;
+            props.onOpen(menu.book);
+          }}
           onStats={() => setDialog({ kind: "stats", book: menu.book })}
           onProps={() => setDialog({ kind: "props", book: menu.book })}
           onTogglePin={() => togglePin(menu.book)}
@@ -2334,7 +2492,8 @@ export default function Shelf(props: {
             // 先把书记下来再清过场：清完 stage 就没了
             const opened = stage.book;
             setStage(null);
-            props.onOpen(opened);
+            // 沉浸模式里过场也不该把人送进阅读页（正常路径进不到这里，兜个底）
+            if (!props.immersive) props.onOpen(opened);
           }}
           onCancel={() => setStage(null)}
         />

@@ -1,6 +1,7 @@
 # 技术上下文 — 依赖、环境与命令
 
-> 最后更新：**2026-10-11**（数字均为实测；内核搬进仓库那一轮把 `cargo test` / 内核 pytest / 冻结点烟测都重跑了一遍）。内核的细节见 `core/README.md` 与 `core/` 的源码。
+> 最后更新：**2026-10-19**（数字均为实测；2026-10-19 这轮重跑了内核 `814` 项 pytest、
+> 壳层 `52` 项 `cargo test`、`tsc --noEmit` 与 `npm run build`）。内核的细节见 `core/README.md` 与 `core/` 的源码。
 
 ## 依赖
 
@@ -45,7 +46,7 @@ Paget 不 import 它，只在运行期拉起 `python -m wreader.serve`（JSON-RP
 **认得的书籍格式**（`wreader.library.SUPPORTED_EXTENSIONS`）：`.txt` / `.epub` / `.mobi` / `.azw3` / `.pdf`
 （mobi / azw3 与 pdf 都是 2026-10-11 加的：前者内核自己解 Palm 数据库，后者自己解对象与流）
 —— 界面那两档文件面板因此**不挡任何扩展名**，认不认由内核决定。
-内核自己的说明 / 目录表见 `core/README.md`；它的 790 条 pytest 就在 `core/tests/`（跑在临时 `$WREADER_HOME` 上）。
+内核自己的说明 / 目录表见 `core/README.md`；它的 814 条 pytest 就在 `core/tests/`（跑在临时 `$WREADER_HOME` 上）。
 
 ## 开发环境（本机实测）
 
@@ -88,6 +89,7 @@ Paget 不 import 它，只在运行期拉起 `python -m wreader.serve`（JSON-RP
 | 内核数据（**装出去的 app** / release 构建） | macOS `~/Library/Application Support/com.paget.gui/core/`、Windows `%LOCALAPPDATA%\com.paget.gui\core\` —— **只跟 app 的 identifier 有关**，与「在哪儿编译」「装第几版」都无关 | `WREADER_HOME` |
 | 升级时的一次性收养 | 新家还空着、而老位置（项目 `.wreader/`、`~/.wreader`）有数据 → **复制**最近写过的那份过去（可重建的 `cache/` 不搬；旧位置原样留着） | `lib.rs` 的 `adopt_legacy_core_data` |
 | 冻结点内核 | `src-tauri/binaries/paget-core/`（打包后落 `<resource dir>/core/paget-core`；Windows 上是 `paget-core.exe`）；**已 gitignore** | `packaging/build-core.sh`（macOS / Linux）/ `packaging/build_core.py`（Windows） |
+| 白噪音素材 | `src/assets/audio/*.mp3`（九段，共 **49 MB**，44.1 kHz / 单声道 / ≈96 kbps） | 换素材时文件名要与 `lib/ambient.ts` 的 `AMBIENT_TRACKS` 对齐（那几行 `import` 就是路径） |
 | 构建产物 | `dist/`（前端）、`src-tauri/target/release/bundle/{macos,dmg}` / `{msi,nsis}` | — |
 
 ## 磁盘占用与回收（2026-10-07 实测）
@@ -101,7 +103,8 @@ Paget 不 import 它，只在运行期拉起 `python -m wreader.serve`（JSON-RP
 | `node_modules/` | 88 MB | `npm ci` 几秒回来 |
 | `src-tauri/binaries/paget-core/` | 39 MB | 随包分发的冻结点内核（**已 gitignore**）；`python packaging/build_core.py` 约 1 分钟回来。它是**产物**不是缓存，清理时留着 |
 | `design/` | 1.3 MB | 设计参考图（给人看的，不进构建） |
-| `dist/` | 456 KB | 前端产物，`npx vite build` 一秒回来 |
+| `src/assets/audio/` | 49 MB | **白噪音九段 mp3**（进仓库的素材，不是缓存，别清理）；`ffmpeg` 从原始录音转来，可重转但原始文件不在仓库里 |
+| `dist/` | 51 MB | 前端产物（其中 49 MB 是拷贝过去的九段 mp3），`npx vite build` 两三秒回来 |
 
 **⚠️ 清完之后别开着编辑器**：`cargo clean` 之后如果这个工作区还开在 VS Code 里，**rust-analyzer
 会自己把它编回来** —— 实测（2026-10-07）：11:09 清空到 0，12:15–12:33 之间 `target/` 又长到
@@ -143,6 +146,11 @@ Paget 不 import 它，只在运行期拉起 `python -m wreader.serve`（JSON-RP
 轻轻搭在一起；`null` / 空串算坏值回落出厂 —— 不显式挡掉的话 `Number(null)` 是 0）。
 两项**分开两个键**：摆法是「每只一条 `{ on }`」，间距是几只之间的关系，塞在一起就得
 动前者的形状与全部读写点）。
+另有 `paget.usage.v1`（**软件使用时间**：`{ seconds }`，读书以外在书房 / 日记 / 勋章 /
+设置等非阅读页面停留的整数秒；窗口可见 + 前台 + 不在阅读页时才加，由 `lib/usage.ts` 计时，
+只在这台机器上累计）。同一个计时器另在内存里记「本次启动的单次非阅读秒数」与「连续沉浸秒数」，
+每 5 分钟把最大值经内核的 `usage` 事件交上去（成就状态里是 `not_reading_session`，只取 max），
+用来解锁「🙈 我不看书」；这两个单次值**不写 localStorage**，关掉程序就归零。
 
 ## 常用命令
 
@@ -150,6 +158,9 @@ Paget 不 import 它，只在运行期拉起 `python -m wreader.serve`（JSON-RP
 npm install                                   # 前端依赖
 npm run tauri dev                             # 开发（前端热更新 + Rust 自动重编）
 npm run build                                 # tsc + vite build（只构建前端）
+
+# 白噪音素材：九段录音 → 96kbps 单声道 mp3（落到 src/assets/audio/，文件名与 AMBIENT_TRACKS 对齐）
+ffmpeg -i <源文件> -ac 1 -ar 44100 -b:a 96k -map_metadata -1 <名字>.mp3
 cd src-tauri && cargo test                    # 壳层测试（52 项，含真拉内核的契约测试）
 cd src-tauri && cargo test <名字>             # 只跑一个
 git log --oneline                             # 本地历史（2026-10-05 起有；无远端）
@@ -207,18 +218,20 @@ python packaging/build_windows.py --core-root D:\src\wreader   # 内核不在旁
     配一份桩 `core.ts`（六个空函数，挡住 Tauri 那边），再 `node out/pickmain.js`。
     注意 `--ignoreDeprecations 6.0`：TS 6 会把 `--moduleResolution node` 当成错误（TS5107）。
   - **改布局数据结构的轮次还要顺手跑内核那一侧**（`core/`）：`core/.venv/bin/python -m pytest core/tests -q`
-    （现在 748 项）、`tools/check_docs.py`、`tools/check_doc_numbers.py` —— 布局是两边共读的一份
+    （现在 814 项）、`tools/check_docs.py`、`tools/check_doc_numbers.py` —— 布局是两边共读的一份
     JSON，`shelf_regions` 的口径必须与 `regionsOf` 一致（2026-10-07 隔板成对那一轮两边各加了断言）。
 
-## 当前测试规模（2026-10-05 实测）
+## 当前测试规模（2026-10-22 实测）
 
 | 命令 | 结果 |
 | --- | --- |
-| `cd src-tauri && cargo test` | **45 passed / 0 failed**（2026-10-10 复核重跑：全部用例跑在一个 binary 里 —— `lib.rs` 45 + `main.rs` 0 + doc-tests 0） |
+| `cd src-tauri && cargo test` | **52 passed / 0 failed**（2026-10-22 复核：全部用例跑在一个 binary 里 —— `lib.rs` 52 + `main.rs` 0 + doc-tests 0） |
+| `core/.venv/bin/python -m pytest core/tests -q` | **814 passed**（2026-10-19 实测） |
 | `npx tsc --noEmit` | **exit 0**（无类型错误） |
+| `npm run build` | **成功**（70 modules；`dist` JS 892.18 kB / CSS 123.61 kB；另有九段 mp3 共 49 MB） |
 
-> ✅ `README.md` 的「测试」一节已同步为 **45 项**（2026-10-10 复核重跑实测），与这里、
-> `memory-bank/README.md` 的「45 项」三处一致。
+> ✅ `README.md` 的「测试」一节现在写 **52 项**（壳层），与这里、`memory-bank/README.md`
+> 的「52 项」三处一致；内核 814 项写在 `core/README.md` 与本表。
 
 
 ## 接口一览

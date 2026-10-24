@@ -105,25 +105,11 @@
     "condition": "words_read >= 1000000000"
   },
   {
-    "id": "vocab_100",
-    "name": "📝 词汇积累",
-    "desc": "生词本满 100 个",
-    "category": "数据积累",
-    "condition": "vocab_count >= 100"
-  },
-  {
-    "id": "vocab_500",
-    "name": "🧠 生词狂魔",
-    "desc": "生词本累计记录 500 个单词",
-    "category": "数据积累",
-    "condition": "vocab_count >= 500"
-  },
-  {
     "id": "translator",
     "name": "🌍 双语者",
-    "desc": "首次使用翻译功能",
+    "desc": "读完两本不同语言原文的书",
     "category": "数据积累",
-    "condition": "translations >= 1"
+    "condition": "finished_languages >= 2"
   },
   {
     "id": "note_master",
@@ -224,13 +210,6 @@
     "condition": "arrow_chapters >= 1"
   },
   {
-    "id": "translate_maniac",
-    "name": "🔤 翻译狂魔",
-    "desc": "累计按下 100 次翻译键（t 翻当前屏 / T 翻整章）",
-    "category": "操作彩蛋",
-    "condition": "translate_hits >= 100"
-  },
-  {
     "id": "help_fan",
     "name": "❓ 帮助迷",
     "desc": "在阅读器里打开帮助页（?）",
@@ -238,11 +217,18 @@
     "condition": "help_opens >= 1"
   },
   {
-    "id": "tiny_terminal",
-    "name": "🪡 极限尺寸",
-    "desc": "把终端缩到 40 列以内，在这样的窗口里读满 5 分钟",
-    "category": "难度挑战",
-    "condition": "narrow_seconds >= 300"
+    "id": "colorful",
+    "name": "🌈 五颜六色",
+    "desc": "用四种自定义颜色的下划线 / 波浪线 / 光点读完一本书",
+    "category": "操作彩蛋",
+    "condition": "colorful_books >= 1"
+  },
+  {
+    "id": "not_reading",
+    "name": "🙈 我不看书",
+    "desc": "单次使用满 1 小时（连续沉浸模式也算），累计的不算",
+    "category": "操作彩蛋",
+    "condition": "not_reading_session >= 3600"
   },
   {
     "id": "narrow_chapter",
@@ -292,7 +278,7 @@
   {
     "id": "holiday_reader",
     "name": "🎆 节日读者",
-    "desc": "在节日里打开 werd 读书（元旦、春节、圣诞……）",
+    "desc": "在节日里打开 Paget 读书（元旦、春节、元宵节）。",
     "category": "隐藏",
     "secret": true,
     "condition": "holiday_opens >= 1"
@@ -336,13 +322,5 @@
     "category": "隐藏",
     "secret": true,
     "condition": "env_tmux >= 1"
-  },
-  {
-    "id": "env_editable",
-    "name": "🧑‍💻 开发者模式",
-    "desc": "用 `pip install -e` 装的可编辑版本读书（源码就在手边）",
-    "category": "隐藏",
-    "secret": true,
-    "condition": "env_editable >= 1"
   }
 ]

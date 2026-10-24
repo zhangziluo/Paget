@@ -47,9 +47,22 @@
 - **不制造第二个事实来源**：同一事实只写在最合适的那个文件里，别处只放链接。
 - 中文为主、代码标识符用英文，与项目其余文档一致。
 
-## 本目录现状（2026-10-05 建库快照；规模与验证两行 2026-10-07 复核）
+## 本目录现状（2026-10-05 建库快照；2026-10-22 复核当前规模与验证）
 
 - 建立于 **2026-10-05**，由当时的会话依据实际代码、`cargo test` 与 `tsc --noEmit` 生成。
+- **2026-10-22 复核（当前）**：`src/`（TS/TSX）**15,244 行 / 44 个文件**、
+  `src/`（CSS）**8,899 行 / 10 个文件**（`App.css` 5,816 + `styles/` 9 个共 3,083）；
+  `src-tauri/src/` **4,390 行 / 5 个 `.rs`**；`packaging/` **1,709 行 / 8 个文件**；
+  `docs/Paget 使用手册.txt` **440 行 / 11,260 字 / 11 章**；
+  另有 `src/assets/audio/` 九段 mp3 **49 MB**（2026-10-22 加）。
+  验证：`cd src-tauri && cargo test` → **52 passed / 0 failed**、
+  `core/.venv/bin/python -m pytest core/tests -q` → **814 passed**、
+  `npx tsc --noEmit` → **exit 0**、`npm run build` ✓（70 modules；CSS 123.61 kB / JS 892.18 kB）。
+  以下明细是旧计数，保留用于对照：
+- **2026-10-19 复核**：`src/`（TS/TSX）**14,734 行 / 44 个文件**、
+  `src/`（CSS）**8,503 行 / 9 个文件**（`App.css` 5,682）；`src-tauri/src/` **4,081 行 / 5 个 `.rs`**；
+  `packaging/` **1,709 行 / 8 个文件**；`docs/Paget 使用手册.txt` **440 行 / 11,260 字 / 11 章**。
+  以下明细是旧计数，保留用于对照：
 - 规模实测（2026-10-13 复核，随第三十 / 三十一轮再核一遍）：
   `src/`（TS/TSX）**13,533 行 / 41 个文件**、`src/`（CSS）**8,332 行 / 9 个文件**
   （`App.css` 5,572 + `styles/manage-mode.css` 586 + `styles/settings-page.css` 525 +
@@ -94,11 +107,13 @@
   —— 第十二轮加了 `build_core.py` + `build_windows.py`，用来在 Windows 上出 MSI / NSIS；
   第三十五轮加了 `seed_dev_shelf.py` 167 行，用来把开发用的书架恢复成「只有一本手册」；
   2026-10-13 复核：`build_core.py` 326 / `build_windows.py` 229 / `smoke_core.py` 383 行）；
-  另有 `docs/Paget 使用手册.txt`（412 行 / 6,690 字 / 13 章 —— 开发书架上唯一那一本的源文件，
+  另有 `docs/Paget 使用手册.txt`（416 行 / 6,749 字 / 13 章 —— 开发书架上唯一那一本的源文件，
   由 `packaging/seed_dev_shelf.py` 导进开发数据）；
   另有 `src-tauri/tauri.windows.conf.json`（20 行）与 `.github/workflows/windows-installer.yml`（98 行，2026-10-13 复核后）。
-- 验证实测：`cd src-tauri && cargo test` → **45 passed / 0 failed**（2026-10-10 复核重跑）；
-  `npx tsc --noEmit` → **exit 0**（无类型错误）、`npx vite build` ✓（CSS 111.08 kB / JS 365.33 kB，2026-10-10 第二十四轮后）。
+- 验证实测（2026-10-19 复核）：`cd src-tauri && cargo test` → **52 passed / 0 failed**；
+  `core/.venv/bin/python -m pytest core/tests -q` → **814 passed**；
+  `npx tsc --noEmit` → **exit 0**（无类型错误）、`npm run build` ✓（61 modules，
+  CSS 118.37 kB / JS 884.44 kB）。
 - **Paget 是本地 git 仓库**（2026-10-05 `git init` + 首次提交）：只在本机留历史，**没有远端、不推 GitHub**
   （2026-10-07 明确定的，见 `projectbrief.md` 非目标）。提交 71 个文件 / 约 1.0 MB。
 - 项目根还有（都**不进**版本控制，见 `techContext.md`）：`.wreader/`（开发期数据，131 MB）、

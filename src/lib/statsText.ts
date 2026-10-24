@@ -101,6 +101,16 @@ export function durationWords(seconds: number): string {
   return seconds > 0 ? duration(seconds) : "还没读";
 }
 
+/**
+ * 「软件使用时间」：读书以外在应用里停留的累计时长。
+ *
+ * 这个数**不来自内核**（内核只认阅读），由 `lib/usage.ts` 在本机计时；
+ * 与 `durationWords` 一样，一秒没记时不说「0 秒」，说「刚开始记」。
+ */
+export function usageWords(seconds: number): string {
+  return seconds > 0 ? duration(seconds) : "刚开始记";
+}
+
 /** 今天的完成度（百分数，`0` 表示没设目标）。与内核同一条整除规矩：不足 1% 不算。 */
 export function goalPercent(todaySeconds: number, goalSeconds: number): number {
   if (goalSeconds <= 0) return 0;

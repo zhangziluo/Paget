@@ -9,6 +9,8 @@ import io
 import json
 # 注入固定日期/时间，保证统计结果可预测
 from datetime import date, datetime
+# 语言判定测试要临时写正文文件
+from pathlib import Path
 
 # pytest.raises / parametrize
 import pytest
@@ -21,8 +23,9 @@ from wreader import config, library, stats
 def test_load_achievements_reads_the_packaged_file() -> None:
     # 读打包的那份成就定义
     definitions = stats.load_achievements()
-    # 当前随包发布 48 条（Phase 1 的 28 条 + 笔记联动的"笔记达人" + Phase 2/3 的 19 条）
-    assert len(definitions) == 48
+    # 当前随包发布 45 条（Phase 1 的 28 条 + 笔记联动的"笔记达人" + Phase 2/3 的 19 条，
+    # 减去 2026-10-16 删掉的 5 条、加上同日新增的「五颜六色」，再加 2026-10-19 的「我不看书」）
+    assert len(definitions) == 45
     for achievement in definitions:
         # 三要素都要非空
         assert achievement["id"]
@@ -43,6 +46,24 @@ def test_load_achievements_reads_the_packaged_file() -> None:
     # id 不能重复
     ids = [achievement["id"] for achievement in definitions]
     assert len(set(ids)) == len(ids)
+
+
+def test_the_shipped_definitions_match_the_2026_10_16_cleanup() -> None:
+    # 2026-10-16 的改动：删五条、改两条 —— 钉在这里，免得哪次编辑又悄悄把它们写回来
+    by_id = {achievement["id"]: achievement for achievement in stats.load_achievements()}
+    for gone in (
+        "vocab_100",  # 词汇积累
+        "vocab_500",  # 生词狂魔
+        "translate_maniac",  # 翻译狂魔
+        "tiny_terminal",  # 极限尺寸
+        "env_editable",  # 开发者模式
+    ):
+        assert gone not in by_id
+    # 双语者：改成"读完两本不同语言原文的书"
+    assert by_id["translator"]["condition"] == "finished_languages >= 2"
+    assert "两本" in by_id["translator"]["desc"]
+    # 节日读者：描述里的应用名改成 Paget
+    assert "Paget" in by_id["holiday_reader"]["desc"]
 
 
 def test_load_achievements_accepts_an_explicit_path(tmp_path) -> None:
@@ -346,6 +367,8 @@ def test_compute_metrics(achievements_document, monkeypatch) -> None:
     assert metrics["single_session"] == 14400
     assert metrics["translations"] == 3
     assert metrics["vocab_count"] == 7
+    # aaa 虽然标了读完，但记录里没有正文路径：语言认不出，不计入
+    assert metrics["finished_languages"] == 0
     # 指标集合固定，成就条件只能引用这些
     assert set(metrics) == {
         "books_read",
@@ -353,6 +376,7 @@ def test_compute_metrics(achievements_document, monkeypatch) -> None:
         "night_time",
         "streak",
         "finished",
+        "finished_languages",
         "vocab_count",
         "translations",
         "single_session",
@@ -368,6 +392,48 @@ def test_compute_metrics_tolerates_a_damaged_session_list(
     assert metrics["books_read"] == 1  # only the intact book counts
     # 好书的夜间时长照常统计
     assert metrics["night_time"] == 7200
+
+
+def test_finished_languages_counts_the_languages_of_finished_books(
+    tmp_path: Path, achievements_document
+) -> None:
+    # 读完的那本 aaa：正文写成中文（语言按正文的文字体系判断）
+    chinese = tmp_path / "zh.txt"
+    chinese.write_text("汪淼看到了一串数字在眼前跳动。\n", encoding="utf-8")
+    achievements_document["books"]["aaa"]["file_path"] = str(chinese)
+    assert stats.compute_metrics(achievements_document, vocab_size=0)[
+        "finished_languages"
+    ] == 1
+
+    # 再来一本读完的英文书：两本书、两种语言 → 双语者达标
+    english = tmp_path / "en.txt"
+    english.write_text("It is a truth universally acknowledged.\n", encoding="utf-8")
+    achievements_document["books"]["ccc"] = {
+        "title": "Pride and Prejudice",
+        "file_path": str(english),
+        "progress": {"finished": True, "sessions": []},
+    }
+    assert stats.compute_metrics(achievements_document, vocab_size=0)[
+        "finished_languages"
+    ] == 2
+
+    # 同一种语言再来一本还是两种：数的是语言，不是书
+    another_chinese = tmp_path / "zh2.txt"
+    another_chinese.write_text("他抬头望向窗外的夜空。\n", encoding="utf-8")
+    achievements_document["books"]["ddd"] = {
+        "title": "又一本中文",
+        "file_path": str(another_chinese),
+        "progress": {"finished": True, "sessions": []},
+    }
+    assert stats.compute_metrics(achievements_document, vocab_size=0)[
+        "finished_languages"
+    ] == 2
+
+    # 没读完的书不算数：ccc 退回未读完，就只剩中文那一种
+    achievements_document["books"]["ccc"]["progress"]["finished"] = False
+    assert stats.compute_metrics(achievements_document, vocab_size=0)[
+        "finished_languages"
+    ] == 1
 
 
 def test_unlocked_ids_accepts_every_historical_shape() -> None:
@@ -474,7 +540,7 @@ def test_build_report_is_complete_and_json_serialisable(achievements_document) -
     assert report["night_seconds"] == 7200
     assert report["longest_session_seconds"] == 14400
     assert report["streak_min_seconds"] == stats.STREAK_SECONDS
-    assert report["achievements"]["total"] == 48
+    assert report["achievements"]["total"] == 45
     # 每本书的累计时长（按降序）
     assert report["books"] == [
         {"id": "aaa", "title": "Read a lot", "seconds": 7200},
@@ -527,7 +593,7 @@ def test_build_report_of_an_empty_library(isolated_home) -> None:
     )
     assert report["total_seconds"] == 0
     assert report["books"] == []
-    assert report["achievements"] == {"unlocked": [], "unlocked_count": 0, "total": 48}
+    assert report["achievements"] == {"unlocked": [], "unlocked_count": 0, "total": 45}
     # 带生成时间
     assert report["generated_at"]
 

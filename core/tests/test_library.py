@@ -55,6 +55,46 @@ def test_count_words_counts_cjk_characters_and_latin_tokens() -> None:
     assert library.count_words("") == 0
 
 
+# --------------------------------------------------------------- language guessing
+# 语言只看正文用的是哪种文字（文字体系），所以中日韩能被认出来
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("汪淼看到了一串数字在眼前跳动。", "zh"),
+        ("It is a truth universally acknowledged.", "en"),
+        ("吾輩は猫である。名前はまだ無い。", "ja"),
+        ("나는 아직도 그 책을 읽고 있다.", "ko"),
+        ("Он жил в маленькой деревне.", "ru"),
+        # 数字、标点、空白什么都认不出
+        ("1234 !!! ---", ""),
+        ("", ""),
+    ],
+)
+def test_detect_language_reads_the_script(text: str, expected: str) -> None:
+    assert library.detect_language(text) == expected
+
+
+def test_detect_language_lets_the_majority_script_win() -> None:
+    # 中文段落里夹几个英文词：汉字多，仍算中文
+    assert library.detect_language("汪淼看到了数字，hello 只是夹在中间。") == "zh"
+    # 反过来，英文正文里引用一句中文：拉丁字母多，算英文
+    assert library.detect_language("She said: 你好, and left the room immediately.") == "en"
+
+
+def test_book_language_reads_the_books_own_text(tmp_path: Path) -> None:
+    # 导入时正文总写成 UTF-8，file_path 就指向它
+    target = tmp_path / "book_utf8.txt"
+    target.write_text("汪淼看到了一串数字在眼前跳动。\n", encoding="utf-8")
+    assert library.book_language({"file_path": str(target)}) == "zh"
+
+
+def test_book_language_degrades_to_unknown(tmp_path: Path) -> None:
+    # 文件不在 / 记录里没有路径 / 图片模式的 PDF 还没转成文字：一律"认不出"
+    assert library.book_language({"file_path": str(tmp_path / "gone.txt")}) == ""
+    assert library.book_language({}) == ""
+    assert library.book_language({"format": "pdf", "text_path": ""}) == ""
+
+
 # 参数化：中文习惯的万字/亿字单位
 @pytest.mark.parametrize(
     "count, expected",

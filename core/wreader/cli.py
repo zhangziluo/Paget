@@ -745,7 +745,13 @@ def _report_unlocked(newly: Sequence[Dict[str, Any]]) -> None:
 
 
 # 这几个指标本身是"秒"，展示时要换算成小时/分钟
-_TIME_METRICS = ("total_time", "night_time", "single_session", "weekend_time")
+_TIME_METRICS = (
+    "total_time",
+    "night_time",
+    "single_session",
+    "weekend_time",
+    "not_reading_session",
+)
 
 #: Weekday labels for the heatmap grid, Monday first (``date.weekday()`` order).
 # 热力图每行的星期名，按 date.weekday() 的顺序（周一是 0）

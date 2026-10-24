@@ -102,6 +102,11 @@ const WORDS: Record<string, SettingWords> = {
     plain:
       "开：从篮子导入之后，新封面一本本从篮口飞上架（书多就飞得更快），按 Esc 或点一下可以跳过；关：导入完直接就是摆好的书架。",
   },
+  "shelf.ambient": {
+    label: "书房的声音（白噪音）",
+    plain:
+      "开：打开就是一点背景声 —— 白天是风铃流水，夜里是两段虫鸣交替（6 点天亮、18 点天黑），循环处有 200ms 淡入淡出。点书架上层那台留声机会弹出曲目面板：上面是开关，下面可以手选九段声音（手选后单曲循环），最后一项「按昼夜自动」回到跟天色走。",
+  },
 };
 
 /** 一节（`settings.toml` 的一个 `[节]`）的人话：标题 + 一句引言。 */
@@ -172,6 +177,7 @@ function valueWords(path: string, value: unknown): string {
   // 两个界面偏好的值不是字面值：说出它现在实际是什么样
   if (path === "shelf.spine_mode") return value === "dynamic" ? "跟着字数" : "一样宽";
   if (path === "shelf.import_flight") return value === "on" ? "飞过去" : "不飞";
+  if (path === "shelf.ambient") return value === "on" ? "一直在响" : "静音";
 
   const text = String(value);
   if (text.trim() === "") {

@@ -176,7 +176,74 @@ pub fn desegment_cjk(text: &str) -> String {
     out
 }
 
-/// One row of the shelf, exactly as the core's `list` method reports it.
+/// Turn a user query into the FTS5 phrase expression used by both searches.
+///
+/// Returns `None` for a query that has no searchable characters, so callers can
+/// answer with an empty result instead of letting FTS5 raise a syntax error.
+fn fts_phrase(query: &str) -> Option<String> {
+    // 先剔掉会破坏 FTS5 语法的字符（引号 / 星号 / 括号由我们自己加）
+    let cleaned: String = query
+        .chars()
+        .filter(|ch| !"\"*()-".contains(*ch))
+        .collect();
+    // 与入库时同一套分段，否则短语对不上 token
+    let needle = segment_cjk(cleaned.trim());
+    if needle.trim().is_empty() {
+        return None;
+    }
+    // 整串当一个短语（中文按字分词后，这正好等于"连续出现"）；末尾 * 允许只打了一半
+    Some(format!("\"{}\"*", needle))
+}
+
+/// Find `needle` in `haystack`, ignoring case, starting at byte offset `from`.
+///
+/// Returns the byte range of the hit.  ASCII / CJK lower-casing keeps the byte
+/// length, so offsets stay valid for slicing; the rare script whose lower-case
+/// form changes length falls back to a case-sensitive search rather than risk
+/// cutting a character in half.
+fn find_ci_from(haystack: &str, needle: &str, from: usize) -> Option<(usize, usize)> {
+    let lower = haystack.to_lowercase();
+    let lowered = needle.to_lowercase();
+    if lower.len() == haystack.len() && lowered.len() == needle.len() {
+        let at = lower.get(from..)?.find(&lowered)?;
+        let start = from + at;
+        Some((start, start + needle.len()))
+    } else {
+        let at = haystack.get(from..)?.find(needle)?;
+        let start = from + at;
+        Some((start, start + needle.len()))
+    }
+}
+
+/// A one-line preview around `line[start..end]`, with the hit wrapped in brackets.
+///
+/// The UI renders `[` `]` as `<mark>`, the same convention the shelf's chunk
+/// snippets already use.  Context is counted in characters, not bytes, so a CJK
+/// line is clipped at the same visual width as an English one.
+fn line_snippet(line: &str, start: usize, end: usize) -> String {
+    const BEFORE: usize = 18;
+    const AFTER: usize = 36;
+    let before_all = &line[..start];
+    let before_count = before_all.chars().count();
+    let before: String = before_all
+        .chars()
+        .skip(before_count.saturating_sub(BEFORE))
+        .collect();
+    let before = before.trim();
+    let after_all = &line[end..];
+    let after_count = after_all.chars().count();
+    let after: String = after_all.chars().take(AFTER).collect();
+    let after = after.trim();
+    format!(
+        "{}{}[{}]{}{}",
+        if before_count > BEFORE { "…" } else { "" },
+        before,
+        &line[start..end],
+        after,
+        if after_count > AFTER { "…" } else { "" }
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookRow {
     /// 书 id（正文 SHA-1 前 12 位）
@@ -257,6 +324,32 @@ pub struct Hit {
     pub line_end: i64,
     /// 命中片段（`[` `]` 标出关键词，已去掉分词用的空格）
     pub snippet: String,
+}
+
+/// One **line-level** hit inside a single book (the reading page's search).
+///
+/// The shelf only needs to know which chunk matched; the reading page needs to
+/// jump to the exact line, so this carries the line number and a snippet of that
+/// one line instead of the whole chunk.
+#[derive(Debug, Clone, Serialize)]
+pub struct BookHit {
+    /// 命中那一行所属的章名（章前内容为空串）
+    pub title: String,
+    /// 内核的行号（0 起始）
+    pub line: i64,
+    /// 这一行里的一次命中片段（`[` `]` 标出关键词）
+    pub snippet: String,
+}
+
+/// What one in-book search found, plus whether the local index is usable.
+#[derive(Debug, Clone, Serialize)]
+pub struct BookSearchResult {
+    /// 按行号从小到大排好的命中
+    pub hits: Vec<BookHit>,
+    /// `false` = 这本书还没建索引（界面可以先调 `index_book` 再搜一次）
+    pub indexed: bool,
+    /// `true` = 索引因 [`MAX_INDEX_LINES`] 只覆盖了书的前半部分
+    pub truncated: bool,
 }
 
 /// A reading position saved by the GUI (an epub CFI, plus the guessed line).
@@ -507,19 +600,10 @@ impl Db {
 
     /// Full-text search across the indexed chunks, best match first.
     pub async fn search(&self, query: &str, limit: i64) -> Result<Vec<Hit>, sqlx::Error> {
-        // 先剔掉会破坏 FTS5 语法的字符（引号 / 星号 / 括号由我们自己加）
-        let cleaned: String = query
-            .chars()
-            .filter(|ch| !"\"*()-".contains(*ch))
-            .collect();
-        // 与入库时同一套分段，否则短语对不上 token
-        let needle = segment_cjk(cleaned.trim());
-        // 空查询直接回空：FTS5 对空 MATCH 会报语法错
-        if needle.trim().is_empty() {
+        // 空查询 / 只剩标点：直接回空（FTS5 对空 MATCH 会报语法错）
+        let Some(expression) = fts_phrase(query) else {
             return Ok(Vec::new());
-        }
-        // 整串当一个短语（中文按字分词后，这正好等于"连续出现"）；末尾 * 允许只打了一半
-        let expression = format!("\"{}\"*", needle);
+        };
         // snippet 的第三个参数是列下标：chunks_fts 的列是 (id, book_id, title, text)
         let rows = sqlx::query(
             "SELECT f.book_id AS book_id,
@@ -548,6 +632,128 @@ impl Db {
                 snippet: desegment_cjk(&row.try_get::<String, _>("snippet").unwrap_or_default()),
             })
             .collect())
+    }
+
+    /// Search **inside one book**, one hit per occurrence with its exact line.
+    ///
+    /// FTS5 narrows the candidate chunks (that is what the index is for), then the
+    /// chunk text is walked line by line so the reading page can jump to the line
+    /// instead of the chapter.  Every occurrence on a line is returned separately.
+    /// When the query only matches after tokenisation (e.g. spaces between Han
+    /// characters), a chunk-level snippet is kept as a fallback so the search
+    /// still points somewhere useful.
+    pub async fn search_book(
+        &self,
+        book_id: &str,
+        query: &str,
+        limit: i64,
+    ) -> Result<BookSearchResult, sqlx::Error> {
+        // 先看这本书有没有索引：没有就让界面去 `index_book`，别把「没建索引」当成「没搜到」
+        let chunk_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM chunks WHERE book_id = ?1")
+                .bind(book_id)
+                .fetch_one(&self.pool)
+                .await?;
+        // 索引只覆盖到哪一行（超过 MAX_INDEX_LINES 的大书要如实说出来）
+        let max_line: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(line_end) FROM chunks WHERE book_id = ?1")
+                .bind(book_id)
+                .fetch_one(&self.pool)
+                .await?;
+        let total_lines: i64 = sqlx::query_scalar("SELECT total_lines FROM books WHERE id = ?1")
+            .bind(book_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .unwrap_or(0);
+        let truncated =
+            total_lines > 0 && max_line.map_or(false, |last| last + 1 < total_lines);
+
+        if chunk_count == 0 {
+            return Ok(BookSearchResult {
+                hits: Vec::new(),
+                indexed: false,
+                truncated,
+            });
+        }
+        let Some(expression) = fts_phrase(query) else {
+            return Ok(BookSearchResult {
+                hits: Vec::new(),
+                indexed: true,
+                truncated,
+            });
+        };
+        // 用户实际输入的那串（去掉首尾空白）：用来在块内逐行找出每一次出现
+        let needle = query
+            .chars()
+            .filter(|ch| !"\"*()-".contains(*ch))
+            .collect::<String>();
+        let needle = needle.trim();
+        // 候选块多取一些：一个块里可能命中好几行，最后再按行号排序、截到 limit
+        let candidates = (limit.saturating_mul(6)).clamp(20, 300);
+        let rows = sqlx::query(
+            "SELECT c.title AS title,
+                    c.line_start AS line_start,
+                    c.text AS text,
+                    snippet(chunks_fts, 3, '[', ']', '…', 12) AS snippet
+             FROM chunks_fts f
+             JOIN chunks c ON c.id = f.id
+             WHERE chunks_fts MATCH ?1 AND f.book_id = ?2
+             ORDER BY bm25(chunks_fts)
+             LIMIT ?3",
+        )
+        .bind(expression)
+        .bind(book_id)
+        .bind(candidates)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut hits: Vec<BookHit> = Vec::new();
+        for row in &rows {
+            let title: String = row.try_get("title").unwrap_or_default();
+            let line_start: i64 = row.try_get("line_start").unwrap_or_default();
+            let text: String = row.try_get("text").unwrap_or_default();
+            let fallback = desegment_cjk(&row.try_get::<String, _>("snippet").unwrap_or_default());
+            let mut found_in_chunk = false;
+            // 块文本用 \n 拼接（见 index_book），逐行走就能直接拿到内核坐标
+            for (offset, raw_line) in text.split('\n').enumerate() {
+                let line = raw_line.trim_end_matches('\r');
+                let mut from = 0usize;
+                while !needle.is_empty() {
+                    let Some((start, end)) = find_ci_from(line, needle, from) else {
+                        break;
+                    };
+                    found_in_chunk = true;
+                    hits.push(BookHit {
+                        title: title.clone(),
+                        line: line_start + offset as i64,
+                        snippet: line_snippet(line, start, end),
+                    });
+                    // 至少往前挪一个字节，避免零宽匹配反复命中
+                    let next = end.max(start + 1);
+                    if next <= from {
+                        break;
+                    }
+                    from = next;
+                }
+            }
+            // 分词后命中、但原文里拼不出用户输入的整串（中文里夹了空格之类）：
+            // 退到块级片段，至少仍能跳到这一块的第一行
+            if !found_in_chunk && !fallback.is_empty() {
+                hits.push(BookHit {
+                    title: title.clone(),
+                    line: line_start,
+                    snippet: fallback,
+                });
+            }
+        }
+        // 一处一行、按书里的顺序排；同一行多个位置也保留（用户能逐个看上下文）
+        hits.sort_by_key(|hit| hit.line);
+        hits.truncate(limit.clamp(1, 200) as usize);
+        Ok(BookSearchResult {
+            hits,
+            indexed: true,
+            truncated,
+        })
     }
 
     /// Save one GUI position (an epub CFI plus the approximated source line).
@@ -829,6 +1035,94 @@ mod tests {
     fn chunk_plan_of_an_empty_book_is_empty() {
         // 正文 0 行：没有任何可索引的东西
         assert!(chunk_plan(&[], 0).is_empty());
+    }
+
+    #[tokio::test]
+    async fn in_book_search_returns_each_line_and_filters_by_book() {
+        // 阅读页搜索要的是**行号**：同一个块里出现两次、跨两个块出现，都要分别列出来
+        let path = temp_db("book-search");
+        let db = Db::open(&path).await.expect("open");
+        db.replace_books(
+            &[
+                book("aaa", "三体", 0.0),
+                book("bbb", "另一本", 0.0),
+                book("ccc", "没索引的书", 0.0),
+            ],
+            "2026-03-01T21:00:00",
+        )
+        .await
+        .expect("replace");
+        db.reindex_book(
+            "aaa",
+            &[
+                Chunk {
+                    ordinal: 0,
+                    title: "第一章".to_string(),
+                    line_start: 0,
+                    line_end: 2,
+                    text: "第一行\n三体世界就在眼前，三体人来了\n普通一行".to_string(),
+                },
+                Chunk {
+                    ordinal: 1,
+                    title: "第二章".to_string(),
+                    line_start: 8,
+                    line_end: 9,
+                    text: "后文又提到三体\n末行".to_string(),
+                },
+            ],
+        )
+        .await
+        .expect("index aaa");
+        // 另一本书也命中同一个词：结果里绝不能混进来
+        db.reindex_book(
+            "bbb",
+            &[Chunk {
+                ordinal: 0,
+                title: "别处".to_string(),
+                line_start: 0,
+                line_end: 0,
+                text: "三体".to_string(),
+            }],
+        )
+        .await
+        .expect("index bbb");
+
+        let found = db.search_book("aaa", "三体", 20).await.expect("search");
+        assert!(found.indexed);
+        assert!(!found.truncated, "10 行全都索引了");
+        // 第二章那行也数上：三处命中，按行号排序（同一行的两处都保留）
+        assert_eq!(
+            found.hits.iter().map(|hit| hit.line).collect::<Vec<_>>(),
+            vec![1, 1, 8]
+        );
+        assert_eq!(found.hits[0].title, "第一章");
+        assert_eq!(found.hits[2].title, "第二章");
+        // 片段用 [ ] 标出关键词，界面据此画 <mark>
+        assert!(found.hits[0].snippet.contains("[三体]"), "{}", found.hits[0].snippet);
+
+        // 搜不到 ≠ 没建索引
+        let missing = db.search_book("aaa", "不存在的词", 20).await.expect("search");
+        assert!(missing.indexed);
+        assert!(missing.hits.is_empty());
+        // 这本书一行都没索引：界面该先去 index_book
+        let unindexed = db.search_book("ccc", "三体", 20).await.expect("search");
+        assert!(!unindexed.indexed);
+        assert!(unindexed.hits.is_empty());
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn line_snippets_are_character_safe_and_marked() {
+        // 长中文行只截命中附近，关键词用方括号标出来（按字符裁，不按字节）。
+        // 前缀里夹一个四字节的 emoji：只要按字符裁，就不会切在字节中间而 panic。
+        let line = format!("{}三体{}", "前😀".repeat(15), "后文".repeat(25));
+        let start = line.find("三体").expect("hit");
+        let snippet = line_snippet(line.as_str(), start, start + "三体".len());
+        assert!(snippet.contains("[三体]"));
+        assert!(snippet.starts_with('…'), "前文被截断时要有省略号");
+        assert!(snippet.ends_with('…'), "后文被截断时要有省略号");
+        assert!(snippet.contains("😀"), "不能把 emoji 切坏");
     }
 
     #[test]

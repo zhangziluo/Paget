@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { CoreItem, Item, Switch, kindOf, toDraft, type Row } from "../components/CoreSetting";
+import { AMBIENT_SETTING_PATH, type AmbientState } from "../lib/ambient";
 import { configGet, configSet, corePaths, getGuiSetting, setGuiSetting } from "../lib/core";
 import { IMPORT_FLIGHT_KEY, normalizeImportFlight } from "../lib/importFlight";
 import { partitionSettings } from "../lib/readerConfig";
@@ -33,7 +34,10 @@ type Section = {
  * 「阅读设置」，分界线见 `lib/readerConfig.ts`（`partitionSettings`）—— 这一页只渲染剩下的
  * 几节（统计 / 书库 / 目录），并在原来那一节的位置留一句交代。
  */
-export default function Settings({ embedded = false }: { embedded?: boolean } = {}) {
+export default function Settings({
+  embedded = false,
+  ambient,
+}: { embedded?: boolean; ambient?: AmbientState } = {}) {
   const [sections, setSections] = useState<Section[]>([]);
   const [paths, setPaths] = useState<CorePaths | null>(null);
   // 草稿：点号路径 -> 编辑框里的字符串
@@ -181,6 +185,7 @@ export default function Settings({ embedded = false }: { embedded?: boolean } = 
       spineDynamic={spineDynamic}
       importFlight={importFlight}
       hasReaderPanel={hasReaderPanel}
+      ambient={ambient}
       busy={busy}
       error={error}
       notice={notice}
@@ -227,6 +232,11 @@ export function SettingsSheet(props: {
   importFlight: boolean;
   /** 阅读页顶栏那块「阅读设置」里有没有东西（有才留那句交代） */
   hasReaderPanel: boolean;
+  /**
+   * 白噪音的开 / 关（应用级状态，`App.tsx` 一路转交到这里）。
+   * 它与书房架子上那台留声机是**同一个**开关 —— 在哪儿点，另一处立刻跟着变。
+   */
+  ambient?: AmbientState;
   busy?: boolean;
   error?: string;
   notice?: string;
@@ -261,6 +271,27 @@ export function SettingsSheet(props: {
 
       {props.error ? <p className="error">{props.error}</p> : null}
       {props.notice ? <p className="notice">{props.notice}</p> : null}
+
+      {/* 书房的声音：白天风铃、夜里虫鸣，打开应用就在响。与架子上那台留声机是
+          同一个开关（状态在 App.tsx），在哪儿点另一处立刻跟着变 */}
+      {props.ambient ? (
+        <section className="set-block">
+          <h3>书房的声音</h3>
+          <p className="set-block-lead">
+            一点背景声 —— 白天是风铃流水，夜里是两段虫鸣交替（6 点天亮、18 点天黑）。
+            点书架上层那台留声机会弹出曲目面板：上面是开关，下面能手选九段声音；
+            手选之后单曲循环，最后一项「按昼夜自动」回到跟天色走。
+          </p>
+          <ToggleItem
+            path={AMBIENT_SETTING_PATH}
+            checked={props.ambient.on}
+            onChange={(next) => {
+              // 状态是受控的：只有真的和现在不一样才切（避免连点两次又切回去）
+              if (next !== props.ambient?.on) props.ambient?.toggle();
+            }}
+          />
+        </section>
+      ) : null}
 
       {/* 界面自己的两个偏好：不进内核的 settings.toml，只存本机 gui_settings */}
       <section className="set-block">
@@ -334,7 +365,7 @@ export function SettingsSheet(props: {
 
       <footer className="set-foot">
         <span>每一项都直接写进书库，没有「确定 / 取消」这一步。</span>
-        <span>「书架的样子」那两项只存本机。</span>
+        <span>「书房的声音」与「书架的样子」只存本机。</span>
       </footer>
     </article>
   );

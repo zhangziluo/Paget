@@ -33,7 +33,8 @@ type MedalState = "gold" | "iron" | "secret";
 /**
  * 名字里那枚符号（内核的 `name` 就长这样：`📖 开卷有益`）。
  *
- * 带 ZWJ 的组合（`🧑‍💻`）与变体选择符（`🗄️`）都得连着一起吃，只留符号本身。
+ * 带 ZWJ 的组合（用户自己往定义里加的那种）与变体选择符（`🗄️`）都得连着一起吃，
+ * 只留符号本身。
  */
 const DEVICE_RE =
   /^(\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?)*)\s*/u;

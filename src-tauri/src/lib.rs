@@ -272,6 +272,20 @@ fn search_cache(
     tauri::async_runtime::block_on(state.search(&query, limit)).map_err(|err| err.to_string())
 }
 
+/// Search inside one book, returning exact line numbers for the reading page.
+#[tauri::command]
+fn search_book(
+    state: State<'_, Db>,
+    book_id: String,
+    query: String,
+    limit: Option<i64>,
+) -> Result<db::BookSearchResult, String> {
+    // 阅读页一屏列得下的就这么多；上限与书架搜索一致，免得一次刷爆界面
+    let limit = limit.unwrap_or(80).clamp(1, 200);
+    tauri::async_runtime::block_on(state.search_book(&book_id, &query, limit))
+        .map_err(|err| err.to_string())
+}
+
 /// Save the GUI's own reading position (an epub CFI plus the guessed line).
 ///
 /// The **authoritative** position still goes to the core (`position` / `session`);
@@ -1261,6 +1275,7 @@ pub fn run() {
             cached_shelf,
             index_book,
             search_cache,
+            search_book,
             save_gui_position,
             load_gui_position,
             get_gui_setting,

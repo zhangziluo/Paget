@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import type { AmbientState } from "../lib/ambient";
 import { BACK_KEY_LABEL } from "../lib/shortcuts";
 import Archived from "./Archived";
 import Data from "./Data";
@@ -32,6 +33,8 @@ export default function Desk(props: {
   tab: Tab;
   /** 点了别的页签 */
   onTab: (tab: Tab) => void;
+  /** 白噪音的开 / 关（应用级状态在 `App.tsx`，这里是转交给设置页那一条开关） */
+  ambient: AmbientState;
 }) {
   // 换 key 就重挂载当前页，等于让它重新拉一次数据
   const [nonce, setNonce] = useState(0);
@@ -61,7 +64,9 @@ export default function Desk(props: {
         ))}
       </nav>
 
-      {props.tab === "settings" ? <Settings key={`settings-${nonce}`} embedded /> : null}
+      {props.tab === "settings" ? (
+        <Settings key={`settings-${nonce}`} embedded ambient={props.ambient} />
+      ) : null}
       {props.tab === "data" ? (
         <Data key={`data-${nonce}`} embedded onLibraryChanged={props.onLibraryChanged} />
       ) : null}

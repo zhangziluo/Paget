@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { statsReport } from "../lib/core";
 import { HEATMAP_CHARS, duration } from "../lib/format";
 import { BACK_KEY_LABEL } from "../lib/shortcuts";
+import { useUsageSeconds } from "../lib/usage";
 import {
   bookShare,
   durationWords,
@@ -12,6 +13,7 @@ import {
   nightSentence,
   streakSentence,
   todayHeadline,
+  usageWords,
 } from "../lib/statsText";
 import type { HeatCell, StatsReport } from "../lib/types";
 
@@ -29,11 +31,16 @@ const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
  * are handed the core's own seconds.  Durations read as `1 小时 5 分` (the same
  * `format.duration()` the book menu uses), so the only thing that differs from the
  * terminal is how it is said.
+ *
+ * 唯一的例外是「软件使用时间」：那**不是阅读数据**，内核不记，由 `lib/usage.ts`
+ * 在本机按「非阅读页面 + 窗口在前台」计时，所以它只在这台机器上累计。
  */
 export default function Stats({ onBack }: { onBack?: () => void } = {}) {
   const [report, setReport] = useState<StatsReport | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // 读书以外在应用里停留的总时长（本机计时；内核不管这件事，见 `lib/usage.ts`）
+  const usageSeconds = useUsageSeconds();
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -71,7 +78,13 @@ export default function Stats({ onBack }: { onBack?: () => void } = {}) {
 
   return (
     <main className="container stats-page">
-      <StatsSheet report={report} busy={busy} onRefresh={refresh} onBack={onBack} />
+      <StatsSheet
+        report={report}
+        usageSeconds={usageSeconds}
+        busy={busy}
+        onRefresh={refresh}
+        onBack={onBack}
+      />
     </main>
   );
 }
@@ -84,11 +97,14 @@ export default function Stats({ onBack }: { onBack?: () => void } = {}) {
  */
 export function StatsSheet(props: {
   report: StatsReport;
+  /** 读书以外的软件使用时间（秒）；由 `lib/usage` 本机计时，缺省 0（SSR 冒烟） */
+  usageSeconds?: number;
   busy?: boolean;
   onRefresh?: () => void;
   onBack?: () => void;
 }) {
   const report = props.report;
+  const usageSeconds = props.usageSeconds ?? 0;
   // 完成度只用来画那根描红的条（达没达标由内核的 `goal_met` 说了算）
   const goal = Math.min(goalPercent(report.today_seconds, report.daily_goal_seconds), 100);
   const night = nightSentence(report.night_seconds, report.total_seconds);
@@ -119,7 +135,7 @@ export function StatsSheet(props: {
         ) : null}
       </section>
 
-      {/* 这些天：本周 / 本月 / 一共 */}
+      {/* 这些天：本周 / 本月 / 一共 / 读书以外的软件使用时间 */}
       <section className="stats-block">
         <h3>这些天</h3>
         <ul className="stats-lines">
@@ -138,7 +154,16 @@ export function StatsSheet(props: {
             <i className="stats-leader" />
             <b>{durationWords(report.total_seconds)}</b>
           </li>
+          <li>
+            <span>软件使用时间</span>
+            <i className="stats-leader" />
+            <b>{usageWords(usageSeconds)}</b>
+          </li>
         </ul>
+        <p className="stats-note">
+          「软件使用时间」只算书房、日记、勋章、设置这些非阅读页面（窗口在前台时），
+          翻开一本书之后不算 —— 那段时间归上面的阅读统计。
+        </p>
       </section>
       {/* 坚持：连着几天 + 几件「读过多少」的小账 */}
       <section className="stats-block">
@@ -238,7 +263,9 @@ export function StatsSheet(props: {
       </section>
 
       <footer className="stats-foot">
-        <span>这些数字都存在本机，只有一份 —— 界面上每一处读的都是它。</span>
+        <span>
+          阅读数字都存在本机书库里，只有一份；「软件使用时间」也记在这台机器上。
+        </span>
       </footer>
     </article>
   );

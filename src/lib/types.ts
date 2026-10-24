@@ -73,6 +73,25 @@ export type SearchHit = {
   snippet: string;
 };
 
+/** One line-level hit inside a single book (the reading page's search). */
+export type BookSearchHit = {
+  /** 命中那一行所属的章名（章前内容为空串） */
+  title: string;
+  /** 内核的行号（0 起始），点结果直接跳到这一行 */
+  line: number;
+  /** 命中片段，`[` `]` 标出关键词 */
+  snippet: string;
+};
+
+/** What one in-book search found, plus whether the local index is usable. */
+export type BookSearchResult = {
+  hits: BookSearchHit[];
+  /** `false` = 还没建索引；界面先调 `indexBook` 再搜一次 */
+  indexed: boolean;
+  /** `true` = 索引只覆盖了书的前半部分（很长的书） */
+  truncated: boolean;
+};
+
 /**
  * The GUI's own reading position.
  *

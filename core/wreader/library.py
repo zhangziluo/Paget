@@ -929,6 +929,74 @@ def count_words(text: str) -> int:
     return len(_CJK_RE.findall(text)) + len(_LATIN_WORD_RE.findall(text))
 
 
+# 语言判定的取样长度：只读正文开头这么多字符（够认出文字体系，又不把整本书读进内存）
+#: How many characters of a book's text are sampled when guessing its language.
+LANGUAGE_SAMPLE_CHARS = 4000
+
+# 文字体系 -> 语言代码：按"这本书的正文是用哪种文字写的"判断原文语言。
+# 顺序就是旗鼓相当时的优先序：假名先把日语认出来，剩下的汉字才轮到中文。
+#: Unicode script ranges per language, in tie-break order.
+_SCRIPT_RANGES: Tuple[Tuple[str, Tuple[Tuple[int, int], ...]], ...] = (
+    # 平假名 + 片假名：日语正文里一定有，认出它就不会把日文当中文
+    ("ja", ((0x3040, 0x30FF),)),
+    # 谚文（合并音节 + 字母 + 兼容字母）：朝鲜语 / 韩语
+    ("ko", ((0x1100, 0x11FF), (0x3130, 0x318F), (0xAC00, 0xD7A3))),
+    # 汉字（扩展 A + 基本区 + 兼容区）：中文
+    ("zh", ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF))),
+    # 西里尔字母：俄语等
+    ("ru", ((0x0400, 0x04FF),)),
+    # 希腊字母：希腊语
+    ("el", ((0x0370, 0x03FF),)),
+    # 阿拉伯字母：阿拉伯语等
+    ("ar", ((0x0600, 0x06FF), (0x0750, 0x077F))),
+    # 希伯来字母：希伯来语
+    ("he", ((0x0590, 0x05FF),)),
+    # 泰文
+    ("th", ((0x0E00, 0x0E7F),)),
+    # 天城文：印地语等
+    ("hi", ((0x0900, 0x097F),)),
+    # 拉丁字母（基本区 + 带附加符号的扩展区）：英语等
+    ("en", ((0x0041, 0x005A), (0x0061, 0x007A), (0x00C0, 0x024F))),
+)
+
+
+def detect_language(text: str) -> str:
+    """Guess the language *text* is written in, as a short code (``""`` when unsure).
+
+    The guess is made from the **script** the text uses -- how many characters fall
+    inside each range of :data:`_SCRIPT_RANGES` -- so a Chinese, Japanese, Korean,
+    Russian or English book each lands on its own code without a dictionary and
+    without a network call.  The script with the most characters wins; ties go to
+    the earlier entry, which is why Japanese is listed before Chinese (its text is
+    mostly kana with kanji mixed in).  Text with nothing recognisable in it -- a
+    picture page, a file of numbers, an empty file -- comes back as ``""``, which
+    callers read as "unknown".
+    """
+    # 取样：开头这些字就足够看出文字体系（整本读进来只是白花时间）
+    sample = str(text or "")[:LANGUAGE_SAMPLE_CHARS]
+    # 每个文字体系数到了多少个字符
+    counts: Dict[str, int] = {}
+    for character in sample:
+        # 这个字符的码点
+        code = ord(character)
+        for name, ranges in _SCRIPT_RANGES:
+            # 落在某个区间里就记一笔；一个字符只算一个体系
+            if any(start <= code <= end for start, end in ranges):
+                counts[name] = counts.get(name, 0) + 1
+                break
+    # 一个可识别的字符都没有：认不出（空文件 / 纯数字 / 纯符号）
+    if not counts:
+        return ""
+    # 占得最多的那个文字体系胜出；并列时按 _SCRIPT_RANGES 的顺序取先出现的那一个
+    best = ""
+    best_count = 0
+    for name, _ranges in _SCRIPT_RANGES:
+        count = counts.get(name, 0)
+        if count > best_count:
+            best, best_count = name, count
+    return best
+
+
 # 章节标题的识别规则：第一章 / 卷三 / Chapter 12，以及序章、楔子、番外这类固定词
 #: Chapter headings: ``第一章`` / ``卷三`` / ``Chapter 12`` plus the usual specials.
 CHAPTER_PATTERN = re.compile(
@@ -1773,6 +1841,33 @@ def book_text_path(book: Dict[str, Any]) -> str:
         )
     # 其余格式：正文一直就在 file_path
     return str(book.get("file_path") or "")
+
+
+def book_language(book: Dict[str, Any]) -> str:
+    """Return the language a book's text is written in, ``""`` when it cannot be told.
+
+    Goes through :func:`book_text_path`, so a converted PDF is read just like a plain
+    text book, and only the first :data:`LANGUAGE_SAMPLE_CHARS` characters are read
+    (:func:`detect_language` needs no more than that).
+
+    Everything that can go wrong degrades to ``""`` -- an image-mode PDF that has not
+    been converted yet, a file that was moved or deleted, a book whose ``file_path``
+    was never set -- because "the language is unknown" must never fail the statistics
+    that merely read this.
+    """
+    try:
+        # 正文路径：图片模式还没转成文字的 PDF 会在这里抛错
+        path = Path(book_text_path(book))
+    except LibraryError:
+        return ""
+    try:
+        # 只读开头一段：认文字体系用不着整本书
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            sample = handle.read(LANGUAGE_SAMPLE_CHARS)
+    except OSError:
+        # 文件被删了、搬走了，或者路径根本是个目录：当作认不出
+        return ""
+    return detect_language(sample)
 
 
 def _import_pdf_image(source: Path, books: Dict[str, Any], result: ImportResult) -> None:

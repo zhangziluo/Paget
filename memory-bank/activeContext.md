@@ -1,10 +1,48 @@
 # 当前焦点 — Paget
 
-> 最后更新：**2026-10-13**。这是每次开始工作前**第一个要读**的文件。
+> 最后更新：**2026-10-22**。这是每次开始工作前**第一个要读**的文件。
 
-## 当前焦点：阅读页（滚动阅读 + 拟物书签 + 排版与纸面主题可调 + 光点导读 + 上下两栏可呼出）
+## 当前焦点：书房的沉浸模式 + 真实音频白噪音（留声机可选曲）+ 阅读页（滚动阅读 + 拟物书签 + 排版与纸面主题可调 + 光点导读 + 上下两栏可呼出）+ 日记里的软件使用时间 + 「🙈 我不看书」成就
 
-> 最近一次改动（2026-10-13）是**阅读页拆成上下两栏**：目录与书签挪到屏幕下方的下栏，
+> 最近一次改动（2026-10-22）是**书房的白噪音换成真实录音 + 留声机选曲**：
+> 九段音频（风铃流水 / 虫鸣一、二 / 森林溪流 / 城市雨夜 / 东京街道 / 篝火 / 海浪 / 印度市场）
+> 随应用打包（96kbps 单声道，约 49MB）；「按昼夜自动」仍是白天风铃流水、夜里两段虫鸣交替，
+> 每一遍开头淡入 200ms、结尾淡出 200ms 再接下一遍。点留声机不再是直接开关，而是弹出曲目面板：
+> 最上面是开 / 关，下面九首（手选后单曲循环），最后一项「按昼夜自动」；手选存本机
+> `paget.ambient.track.v1`。见「本次改动（2026-10-22）：白噪音换成真实音频，留声机可选曲」；
+>
+> 再往前（2026-10-19）是**新增成就「🙈 我不看书」**（`not_reading_session >= 3600`）：
+> 这一次打开程序后，不读书地待满一小时，或连续开着沉浸模式一小时就解锁；跨次启动的累计不算。
+> 界面每 5 分钟把「单次非阅读使用」的峰值报给内核（`usage` 事件），内核只存最大值。
+> 见「本次改动（2026-10-19）：新增成就『🙈 我不看书』」；
+>
+> 同一天较早是**「读书日记」增加「软件使用时间」**：书房、日记、勋章、设置与数据、
+> 已归档这些**非阅读页面**，只要窗口在前台就累计秒数；翻开一本书（文字 / PDF）就停表。
+> 这个数不是内核的阅读数据，由 `src/lib/usage.ts` 在本机计时（localStorage `paget.usage.v1`），
+> 日记页「这些天」里多一行「软件使用时间」。见「本次改动（2026-10-19）：读书日记增加『软件使用时间』」；
+>
+> 同一天较早是**书房新增「沉浸模式」**：墙上多出第四枚便利贴「沉浸」，
+> 点一下只留书架 —— 书打不开、右键菜单不弹、统计 / 成就 / 设置三枚贴纸灰掉、导入 / 搜索 /
+> 同步 / 清缓存 / 留声机 / 玩偶面板全部停用，**只有整理书架（锤子或 `M`）还能用**；
+> 退出就再点那枚「沉浸」（它在开启时点亮、始终可点）。状态只活在 `App.tsx` 的 `useState`，
+> 重启即回正常模式。见「本次改动（2026-10-19）：书房新增沉浸模式」；
+>
+> 再往前（2026-10-17）是**书房的白噪音**：打开应用就在响 —— 白天「林间风声」、夜里「蝉鸣」
+> （与书房天色同一个 `skyOf` 判断，6 点 / 18 点整点换、交叉淡入淡出），声音全部用 Web Audio
+> **现场合成**（不引音频文件、不联网）；架子上那台**留声机成了开关**（点一下开 / 关，响着时喇叭口
+> 有一圈暖光在呼吸），设置页也多了一条同源的「书房的声音」。开没开存本机 `paget.ambient.v1`
+> （默认开）；被自动播放策略挡住时，碰一下窗口就响。见「本次改动（2026-10-17）：书房的白噪音」；
+> 再往前（2026-10-16）是**新增一条成就「🌈 五颜六色」**（`colorful_books >= 1`：
+> 同一本书上挑过 **≥4 种**自定义导读色（光点 / 下划线 / 波浪线，出厂色不算）**且**这本书标了读完；
+> 颜色按书攒、随 `session` 上报，书架的「标记已读」现在也会发 `book_finish` 当场结算），
+> 见「本次改动（2026-10-16）：新增成就『🌈 五颜六色』」；
+> 同一天早些时候把**导读那三枚颜色控件从小色块换成写着「换颜色」的文字按钮**
+> （**三枚各占一行、左边缘对齐**；点一下仍弹系统取色盘、颜色逻辑与存档键一个字节没动；当前色值只放在悬停提示里；
+> 纸色面板的「底色 / 字色」没动，还是原来的小色块），
+> 见「本次改动（2026-10-16）：导读三枚颜色按钮改成「换颜色」文字按钮」；
+> 同一天再早些时候还**删了五条成就、改了两条**（定义 48 → 43 条），
+> 见「本次改动（2026-10-16）：成就删五条、改两条」；
+> 再往前（2026-10-13）是**阅读页拆成上下两栏**：目录与书签挪到屏幕下方的下栏，
 > 上栏只留「这本书 / 我在哪」，呼出的两块木头换成与书架右键卡片同一套木料，
 > 选项文案改成大白话 —— 只动 `.github` 那处以外的前端（`views/Reader.tsx`、`App.css`、
 > `PdfReader.tsx`、`readerConfig.ts`、`settingsText.ts`），见「本次改动（2026-10-13，第三十轮）」；
@@ -153,7 +191,8 @@
     正弦波 —— **形状走 `mask`、颜色走 `background-color`**（所以用户挑的颜色照样能上），
     `mask-size` 用 em 给，字号一变波浪跟着变；线粗 : 波长 = 1 : 4.8 是**量过浏览器那支笔**定的
     （见第二十四轮那节），振幅比它粗一倍（不然 1× 屏、20px 字号下振幅还不到一个像素，看不出是波浪）。
-  **那几样颜色都可以自己换**（浮层里三枚取色器，2026-10-10 加）：光点色（那颗小球，高光 / 暗边 /
+  **那几样颜色都可以自己换**（浮层里三枚颜色控件，2026-10-10 加；2026-10-16 起换成写着「换颜色」的
+  文字按钮 —— 点开仍弹系统取色盘，色值只放悬停提示里）：光点色（那颗小球，高光 / 暗边 /
   两层光晕都由它派生）、下划线色（它划过的那条线 —— 含下划线模式下那一段）与波浪线色
   （波浪线那一号那一段）。存 `reader.prefs` 的 `guideDotColor` / `guideLineColor` / `guideWaveColor`，
   **空串 = 出厂色**（光点琥珀；下划线在光点模式下是淡琥珀、在下划线模式下跟正文墨色；波浪线跟正文墨色）。
@@ -221,6 +260,447 @@
   也是存回内核的位置。跳转落在已装好的这一批之外时由 `loadAt` 从目标行重新铺一批
   （并把滚动位置拉回顶部）。一屏滚多少按**像素**算（`SCROLL ratio 0.9`），
   不再需要「这一屏放得下几行」这种度量 —— `pageSize` / `viewport` / 量法都删了。
+## 本次改动（2026-10-22）：白噪音换成真实音频，留声机可选曲
+
+**需求**：用户要把原来**现场合成**的白噪音换成 `processed/` 里那九段真实录音，并且能自己选曲：
+白天用「风铃流水」、夜里「虫鸣1 / 虫鸣2」交替，**每一遍 200ms 淡入 / 淡出**；
+点留声机弹出**曲目列表**（含开关与「自动」），九首都能点。
+
+**音频**：九段全部用 ffmpeg 转成 **96kbps 单声道 mp3**（`-ac 1 -ar 44100 -map_metadata -1`），
+从 `processed/` 落到 `src/assets/audio/`，文件名改成 ASCII（`wind-chime.mp3` / `cicada-1.mp3` /
+`cicada-2.mp3` / `forest-stream.mp3` / `city-rain.mp3` / `tokyo-street.mp3` / `bonfire.mp3` /
+`waves.mp3` / `india-market.mp3`）—— 中文名在 Tauri 的路径与打包链路上容易出岔子。
+总体积从约 77MB 降到 **49MB**（最大的两段是海浪 20MB、篝火 13MB）。这些文件由 **Vite 直接 import**
+（`import url from "../assets/audio/xxx.mp3"`，`vite-env.d.ts` 已有 `vite/client`），
+打包后地址带 hash，开发时走 `http://localhost:1420/assets/...`、安装后走应用自己的协议。
+
+**`lib/ambient.ts`（重写）**：
+
+- `AmbientTrackId` 九个 id + `AMBIENT_TRACKS`（id / 中文名 / url / `hint`）。
+  面板顺序把三首默认的排前面（风铃流水「白天默认」、虫鸣一 / 二「夜里默认」），后接另外六首。
+- `ambientProgramOf(sky)`：白天 `["wind-chime"]`、夜里 `["cicada-1", "cicada-2"]`。
+- `AmbientMode = { kind: "auto" } | { kind: "track"; track: AmbientTrackId }`，
+  存档键 **`paget.ambient.track.v1`**（存 `"auto"` 或曲目 id；读坏 / 没存过都回自动）。
+  开 / 关仍在 `paget.ambient.v1`。
+- `AmbientPlayer`：`AudioContext` + 一条主音量（0.7）**只在打开时创建**；缓冲用
+  `fetch(url) → decodeAudioData` 解一次就按 id 缓存（同一首并发只解一遍）。
+- **不用 `source.loop`**：每一遍新建一个 `AudioBufferSourceNode`，自己的 `GainNode` 排
+  「`0.0001 → 1`（200ms）→ 保持 → `0.0001`（结尾 200ms）」，`onended` 里把
+  `index = (index + 1) % sequence.length` 再起下一遍 —— 单曲就是自己，夜里就是两首交替。
+  接缝处两遍几乎无缝（上一遍已经淡到 0），也不会「咔」。
+- **换曲 / 关掉**同样 200ms 淡出；换曲时新旧两遍叠着换。`generation` 计数让
+  「还没解完的 buffer」与「旧一遍的 `onended`」在切歌后作废（快速连点不会串台）。
+- 自动播放策略照旧：`resume()` 不行就 `armWake()`（`pointerdown` / `keydown` / `touchstart` 一次性）。
+- `useAmbient()` 交出来的是 `on / mode / current / label / playing / toggle / selectTrack / selectAuto`；
+  `selectTrack` 会顺手把声音打开（选了一首 = 我要听）。半小时对一次表（`skyOf`），
+  跨 6 点 / 18 点自动换一套。
+
+**留声机改成「弹出面板」**（`Shelf.tsx`）：
+
+- 导出的 **`AmbientPicker`**（面板不碰 localStorage，与 `ToyPicker` 同一套写法）：
+  第一行开关（`aria-pressed` 跟 `on`，左边小圆点亮着 = 有声音）→ 细隔线 → 九首 →
+  细隔线 → 「按昼夜自动」。选中的那一行 `.active`；**正在响的那一行 `.sounding`**
+  （左边一条暖色竖线），自动模式下两首虫鸣交替时也看得出轮到谁。
+- `li.decor-item.gramophone` 上加了 `gramoOpen` / `gramoRef`；按钮改成
+  `aria-haspopup` + `aria-expanded`，点一下开 / 收面板；点外面或 `Esc` 收起（与玩偶面板同一段逻辑），
+  沉浸模式仍把面板一起收掉。`.playing` 的喇叭口呼吸、沉浸模式禁用都保留。
+- 面板 **从机器下方弹出**（`.ambient-picker`，`top: calc(100% + 0.2rem)`）——
+  这一格在书架最上面，往上弹会顶出窗外。装饰层本来就是 `overflow: visible`，能盖住下层书排；
+  打开时 `.gramo-open { z-index: 9 }`（玩偶那格是 7）。宽度 10.6rem，
+  最高 `min(15.5rem, calc(100vh - 12rem))`（小窗口也放得下），超出自己滚。
+
+**文案**：`Settings.tsx` 与 `lib/settingsText.ts` 那一条改成「白天风铃流水、夜里两段虫鸣交替 /
+点留声机弹面板 / 手选后单曲循环」；`lib/sky.ts` 注释里的旧名字同步改掉；
+`README.md` 摆件那一段与 `docs/Paget 使用手册.txt`（第一章的声音段 + 第七章那份清单）一起更新。
+
+**验证（2026-10-22 实测）**：
+
+- `npx tsc --noEmit` → exit 0；`npm run build` ✓ —— **70 modules**，CSS 123.61 kB / gzip 27.99 kB、
+  JS 892.18 kB / gzip 274.79 kB；九段 mp3 各带 hash 落在 `dist/assets/`，`dist` 一共 51 MB。
+- `cd src-tauri && cargo test` → **52 passed / 0 failed**（这一轮没动 Rust）。
+- `npm run dev` + `curl`：`/` → **200**、`/src/assets/audio/wind-chime.mp3` → **200 / 421,346 字节**
+  —— Vite 当资产直接发出来，`import` 拿到的 url 与实际能取到的是同一条。
+- `ffprobe` 逐条核对：九段全部 **44.1 kHz / 单声道 / ≈96 kbps**，时长从 11.0s（森林溪流）到
+  29.8min（海浪）；`src/assets/audio/` 共 **49 MB**。
+- 行数（实测）：`lib/ambient.ts` **578**、`views/Shelf.tsx` **2,584**、`App.css` **5,816**。
+
+**已知 / 取舍**：
+
+- **接缝不是绝对无缝**：上一遍在结尾 200ms 淡到 0.0001，下一遍按 `at = currentTime + 0.02` 起，
+  所以两遍之间有**约 20ms 静默** —— 听不出来，但这样调度不会落在过去的时间点上。
+- **再点同一首不会从头开始**：`play()` 发现序列没变就直接返回，免得误触把正在听的一段掐断。
+- **九段 mp3 会进 git**：`src/assets/audio/` 没被 `.gitignore` 忽略，它们是构建必需的素材，
+  忽略掉新克隆的仓库就打不出包；真要瘦身得走 Git LFS 或改成安装包资源。
+- **真机听感 / 面板交互未跑**：面板开合（点外面 / Esc）、九首都能选、手选后单曲循环、
+  「按昼夜自动」回得去、夜里两首交替、接缝处 200ms 淡入淡出、沉浸模式里点不开 ——
+  前端没有自动化测试，只能 `npm run tauri dev` 里人耳 / 人眼过一遍（见 `progress.md` 待办 #8）。
+
+
+## 本次改动（2026-10-19）：新增成就「🙈 我不看书」
+
+**需求**：用户原话「增加成就『我不看书』，达成逻辑：打开程序之后，使用沉浸模式运行一小时，
+或者单次软件使用时间超过一小时，累计的不算。」
+
+**口径**：一条成就，两个入口共用同一个「单次非阅读使用」峰值 —— 这一次启动程序后，
+在非阅读页面（书房 / 日记 / 勋章 / 设置等）前台停留满 3600 秒，或连续开着沉浸模式满 3600 秒。
+翻开书时计时暂停（阅读时长归内核），但同一次启动内回来继续算；**关掉程序再开就重新起表**，
+跨次启动的时长绝不相加。沉浸模式那一路在关掉沉浸时单独归零，因此「连续沉浸一小时」也是独立成立的。
+
+- **内核定义**（`core/wreader/data/achievements.json`）：新增 `not_reading`（「🙈 我不看书」，
+  操作彩蛋，`not_reading_session >= 3600`），定义 **44 → 45 条**。
+- **内核指标**（`core/wreader/achievements.py`）：`not_reading_session` 进 `_INT_METRICS` 与
+  `MAX_METRICS`，`compute_metrics` 从状态里读；新事件 `usage` 的载荷是
+  `{"seconds": 当前单次峰值}`，`_record_usage_session` 只做 `max(旧值, 新值)` ——
+  所以界面重复上报只会让进度变大，不会把多次使用加成累计值；合并备份时也按峰值取大。
+- **界面计时**（`src/lib/usage.ts`）：`runSeconds` 在模块加载时（= 程序启动）从 0 开始，
+  只在「非阅读 + 可见 + 前台」的每秒跳一次时 `+1`；`immersiveSeconds` 在沉浸开启时从 0 起、
+  关掉即归零。每 5 分钟或刚好满一小时时，把 `max(runSeconds, immersiveSeconds)` 经
+  `App.tsx` 的 `recordEvent("usage", …)` 报给内核（失败退避 60 秒再试，成功后停止到下一刻度）。
+- **为什么不把两个入口做成两条成就**：成就条件只支持「一个指标 OP 数字」，写不出「A 或 B」；
+  把两个入口折成同一个峰值指标，既满足「或」，又天然满足「累计不算」（取 max，不求和）。
+- **和「软件使用时间」的关系**：同一次走秒，但用途分开 —— 长累计（`paget.usage.v1`）继续给
+  日记页显示，单次峰值只进内核的成就状态；两个数字都不重算阅读时长。
+- **文案/文档**：`README.md`、`docs/Paget 使用手册.txt` 第七章、`core/README.md` 的条数都从
+  44 改为 45，并写清「单次 / 累计不算 / 沉浸也算」。
+
+**验证**：`core/.venv/bin/python -m pytest core/tests -q` → **814 passed**
+（含新增的「usage 事件只保留最大值」用例与 45 条定义断言）；`npx tsc --noEmit` exit 0；
+`npm run build` ✓（61 modules，`dist` JS 884.44 kB / CSS 118.37 kB）；
+临时 `$WREADER_HOME` 脚本跑通「两次 40 分钟不解锁、单次 60 分钟解锁」，CLI 实测显示
+`🙈 我不看书 0分钟/1小时`；`git diff --check` 干净。
+**真机等满一小时未跑** —— 前端没有自动化测试，前台走秒、翻书暂停、沉浸归零、
+5 分钟进度上报、满 3600 秒解锁、重启归零仍需在 `npm run tauri dev` 里过一遍。
+
+## 本次改动（2026-10-19）：读书日记增加「软件使用时间」
+
+**需求**：用户原话「在日记中增加一个软件使用时间，计算类型：停留在设置页面，勋章页面，
+日记页面，首屏书架页面等非阅读的时间总和」。
+
+**口径**：读书以外的**所有**页面都算（书房 / 日记 / 勋章 / 设置 / 数据 / 已归档 / 各种弹窗），
+不是只数用户点名的那四个；阅读页（文字与 PDF）不算，那段时间已经由内核的阅读 `session` 记着，
+这里不重复。窗口被盖住、最小化、系统弹文件选择框时也停表，免得设置页开着去吃饭一直涨。
+
+- **新文件 `src/lib/usage.ts`**：本机计时 + 存本机 localStorage（键 `paget.usage.v1`，
+  形状 `{ seconds }`）。`normalizeUsageSeconds()` 只认非负整数秒（也兼容裸数字 / 数字字符串），
+  坏存档兜 0；`loadUsageSeconds()` / `saveUsageSeconds()` 在隐私模式下静默失败，不挡书架。
+- **计时器挂在 `App.tsx` 顶上**：`useUsageTracker(open !== null, immersive, reportUsage)` ——
+  翻开书（`open` 有值）就停表，回书房 / 挂件页自动继续。每秒一跳，每 5 跳落一次盘；
+  `visibilitychange` 隐藏、`blur`、`pagehide` 与 effect 清理时再补一笔。只按定时器跳数累计，
+  不按墙钟差值补，系统睡眠回来不会一口气多出几个小时。同一个计时器每 5 分钟把「单次峰值」
+  交给 `reportUsage`（`recordEvent("usage", { seconds })`），这就是「🙈 我不看书」的来源；
+  累计秒数本身仍然只在本机，内核不参与日记页那一行。
+- **为什么不把秒数放进 `App` 的 state**：那样每秒都会重渲染整个书房（书脊、玩偶、天色）。
+  模块里留一份 `cachedSeconds`，`useUsageTracker` 只走秒，`useUsageSeconds()` 用
+  `useSyncExternalStore` 让**日记页自己订阅**；书架不订阅，一秒一次的重渲染只发生在日记页里。
+- **日记页显示**（`views/Stats.tsx`）：在「这些天」的「这一周 / 这个月 / 从第一页到现在」后面
+  多一行「软件使用时间」，数值走 `statsText.usageWords()`（0 显示「刚开始记」，不说 0 秒）；
+  下面一句小注说明只算非阅读页面、窗口在前台。`StatsSheet` 的 `usageSeconds` 是可选 prop
+  （缺省 0），SSR 冒烟不需要造本机存档。
+- **和内核的边界**：阅读数字仍全部来自 `StatsReport`，一个都没重算；只有「软件使用时间」是本机
+  计时。统计页页脚也从「这些数字都存在本机，只有一份」改成分别说明这两类数字。
+- **文档**：`README.md` 统计页那一条、`docs/Paget 使用手册.txt` 第七章都补了这一行与口径。
+
+**验证**：`npx tsc --noEmit` exit 0；`npm run build` ✓（61 modules，`dist` JS 883.96 kB /
+CSS 118.37 kB）；Node 里钉了 `normalizeUsageSeconds` 的坏值 / 小数 / 字符串 / 负数与
+`usageWords(0 / 61 / 3661)`，均通过。**真机计时（前台走秒、切走停表、开书停表、重启累计还在、
+日记页每秒更新）未跑** —— 前端没有自动化测试，这一步需要在 `npm run tauri dev` 里过一遍。
+
+## 本次改动（2026-10-19）：书房新增沉浸模式（只留书架，还能整理）
+
+**需求**：用户原话「在书架的首页添加一个沉浸模式，点击后无法打开书和点开设置等选项，
+但只有管理书架依旧可以使用」。实现上把它做成墙上的**第四枚便利贴「沉浸」**：点一下开、
+再点一下关；开着的时候一切「离开书架」的入口都停用，只留整理书架本身。**只碰前端**，
+内核 / 壳层 / 依赖 / 存档键都没动。
+
+- **开关就是墙上那枚便利贴「沉浸」**（`views/Shelf.tsx` 传给 `components/StickyNoteNav.tsx` 的
+  `notes` 里多一项 `{ id: "immersive", text: "沉浸", toggle: true, active, onClick }`）。
+  另外三枚（日记 / 勋章 / 调一调）在沉浸模式里带 `disabled: props.immersive`。
+  `StickyNoteNav` 的 `StickyNote` 类型因此多了三个可选字段：`toggle` / `active` / `disabled`；
+  纸色从三色扩到**四色**（新增 `sky`，`COLORS` 顺着 id 循环发，四枚正好四色各一枚；
+  色值在 `styles/sticky-note.css`）。
+- **`toggle` 那枚不撕下**：它不打开另一页、`Shelf` 也不会重新挂载，若照常走「撕下 → 飞走」
+  就再也飞不回来。于是 `clickNote` 对它**立刻 `onClick()`**（不经过 `STREAK_MS` 的等待与
+  `tearOff`），也不参与「连点 5 下翻面」的彩蛋；点它时还会把另一枚「正等着撕下」的计时器
+  取消掉（否则 300ms 后那一枚照样飞走、去开那一页）。另外三枚的撕下 / 贴回、拖拽、翻面一概照旧。
+- **状态只在 `App.tsx`**：`const [immersive, setImmersive] = useState(false)`，**故意不写
+  localStorage** —— 重启应用就回正常模式，不会让人第二天打开时被一个记着的「沉浸」关在门外。
+  `Shelf` 多了 `immersive` / `onToggleImmersive` 两个 props。
+- **两道门（防御性重复）**：
+  - `App.tsx` 里 `onOpen` / `onOpenStats` / `onOpenAchievements` / `onOpenDesk` 四个回调
+    各自先 `if (!immersive)` 再 setState；
+  - `Shelf.tsx` 里再挡一遍：`openBook`（点书脊 / 过场结束）、`openMenu`（右键 / 长按）、
+    `doImport`、搜索按钮、`⌘K` 与 `/`、单键 `S` / `A` / `G`（**`M` 放行**）全部检查
+    `props.immersive`。开沉浸时还有一个 effect 把搜索、右键菜单、玩偶面板、导入选法菜单
+    一并收掉（兜底，正常路径点不到它们）。
+- **一起停用的入口**：右上角的 ⟳ 重新同步、♻ 清缓存、🔍 搜索；书架左边那只藤条篮子
+  （导入，连提示都改成「沉浸中不可导入」）；摆件架上的留声机（白噪音开关）与玩偶按钮；
+  书架的右键菜单（所以「另一页 / 选项 / 删除 / 标记已读」都进不去）。按钮统一加 `disabled`，
+  悬停提示改成「沉浸模式：……」说明原因；书架为空时的空态文案也另写一句。
+- **依旧能用的**：翻屏 `←` `→`、墙上三枚之外的那枚「沉浸」、**整理书架**（右上角锤子或 `M`：
+  拖书排序、跨屏、隔板、批量编辑、玩偶在管理模式里的反应都保留）。这是需求点名要留的。
+- **样式**（`styles/sticky-note.css`）：`.sticky-note.is-active` 点亮 —— 纸边一圈暖色 box-shadow
+  + 右上角一颗暗红小点（不挡点击）；`.is-disabled` 降饱和、`cursor: not-allowed`、悬停不再下压、
+  翘角不再展开，且用 `.front` / `.back` 多一级权重压住 22:00 之后那条 `is-late` 的滤镜。
+  禁用按钮本身不会触发 `pointerdown`，`startDrag` / `clickNote` 里也各留了一道 `disabled` 判断。
+- **无障碍**：`aria-pressed` 只给 `toggle` 那枚（`!!note.active`），普通入口仍是普通按钮；
+  `disabled` 属性同时挡住键盘与读屏的点按。
+
+**改了哪些文件**：`src/App.tsx`（state + 四个回调的门）、`src/views/Shelf.tsx`
+（props / 书脊与右键 / 导入 / 同步 / 清缓存 / 搜索 / 留声机 / 玩偶 / 空态 / 第四枚贴纸）、
+`src/components/StickyNoteNav.tsx`（四色、`toggle` / `active` / `disabled`、点击与拖拽的门）、
+`src/styles/sticky-note.css`（第四色、点亮 / 灰掉）；文档 `README.md`、`docs/Paget 使用手册.txt`
+（第一章：四枚贴纸 + 一节「沉浸模式」）。
+
+**验证**：`npx tsc --noEmit` exit 0；`npx vite build` ✓（60 modules，`dist` JS 881.83 kB /
+CSS 118.30 kB）。真机交互（点贴纸开 / 关、书与各按钮确实点不动、`M` 仍能整理、刷新后回到
+正常模式）需要在 `npm run tauri dev` 里过一遍 —— 前端没有自动化测试，这一步本轮未跑。
+
+**后续（同日）**：用户看到开发书架上的篮子和手册**各占半排、手册显得变厚**。查下来与本轮
+文档改动无关：开发数据里那本手册仍是旧的 **412 行 / 6690 字**副本（动态模式宽度保底
+`4.2rem`，怎么加字都不会变宽），真正的原因是本机 `gui_settings.shelf.spine_mode` 存着
+`uniform`（设置页「书脊厚薄跟着字数走」关着）—— 统一等宽会把篮子和唯一一本书各分半排。
+已把该键改回 `dynamic`，两者恢复成原来的窄书脊、挨着放。
+
+## 本次改动（2026-10-17）：书房的白噪音（白天「林间风声」/ 夜里「蝉鸣」，留声机是开关）
+
+**需求**：用户原话「加入白噪音功能，默认开启，白天播放林间风声，夜晚播放蝉鸣」。商量时定了两件事：
+声音**不带音频文件**（全部 Web Audio 现场合成，离线、零体积），以及**架子上那台留声机就是开关**。
+这一轮**只碰前端**（内核 / 壳层 / 依赖都没动，`package.json` 一个包没加）。
+
+- **新文件 `src/lib/sky.ts`（38 行）**：把原先藏在 `views/Shelf.tsx` 里的 `DAY_START = 6` /
+  `NIGHT_START = 18`、`skyOf(date)` 与 `useSky()` 原样搬出来。搬的理由只有一个：**白噪音与书房天色
+  必须用同一套判断** —— 两处各写一份 6 / 18 点，迟早有一处先改、然后「窗外天黑了、声音还是风」。
+  `Shelf.tsx` 改成 `import { useSky }`，行为与从前一字不差（原来那几行换成了指向本文件的注释）。
+- **新文件 `src/lib/ambient.ts`（541 行）**：
+  - 纯函数 `ambientTrackOf(date)`：`skyOf` 说白天就是 `"wind"`、否则 `"cicada"`（于是 5:59 蝉 / 6:00 风、
+    17:59 风 / 18:00 蝉）；`AMBIENT_TRACK_LABEL` 是两段声音在界面上的名字；
+  - 本机存档 `loadAmbientOn` / `saveAmbientOn`：键 `paget.ambient.v1`，走 `localStorage`、**默认开**。
+    与玩偶摆法同一个理由（首屏第一帧就要知道；`gui_settings` 是异步的，来不及），也与它们一样
+    读不出来 / 写不进去都不抛、只回落默认；
+  - `AmbientPlayer` 类：一个 `AudioContext` + 一条主音量 0.7 + 至多一段正在响的声音。`play(track)`
+    先 `resume()`，仍不是 `running` 就挂一次性的 `pointerdown` / `keydown` / `touchstart`（capture），
+    用户碰第一下就 resume 起声（**自动播放被挡**是 WKWebView 里最可能的情形）；`stop()` 0.6 秒淡出、
+    **`AudioContext` 留着**；`swap()` 新旧两段**交叉 1.4 秒**（旧的 `cancelAndHoldAtTime` 停在当前值再降、
+    新的 1.6 秒淡入），所以 6 点 / 18 点那一下不是硬切；`dispose()` 才 `ctx.close()`。
+  - `useAmbient()` hook：`on` / `track` / `playing` / `toggle`。三个 effect 各管一件事 ——
+    半小时对一次表（`ambientTrackOf`）、跟着 `on` / `track` 开或换、只在卸载时 `dispose()`。
+    **换曲不在清理里 stop**（`play()` 自己会交叉淡入淡出，清理里再停一次会把新的一段也停掉）。
+- **声音怎么合成的**（全在 `buildWind` / `buildCicada` / `fillBrown` / `fillCicada`）：
+  - **林间风声**：棕噪声（6 秒缓冲、`loop`）过 lowpass，通频带被 **0.055 Hz** 的 LFO 在 230–690 Hz
+    之间慢慢推（≈18 秒一阵风）；另有一层很轻的白噪声过 2.6 kHz 带通当「树梢」，幅度被 0.09 Hz 的
+    LFO 轻轻晃。两层各有慢起伏，所以不像一段循环的雨声。
+  - **蝉鸣**：8 秒缓冲里叠**三只「知了」** —— 4 kHz 上下的载波 × 每秒 35–47 次的调幅（那股金属「嗡嗡」）
+    × 各自的乐句包络（响 1–2 秒、歇一下），三只的载波 / 调幅 / 句长 / 起唱时刻都不同。
+    **8 秒是算过的**：乐句周期取 2 / 8÷3 / 4 秒，载波与调幅又都是整数赫兹，8 秒里正好走完整数个来回，
+    循环接缝不会「跳拍」；首尾各淡 40 ms（噪声 30 ms）把接缝那一下「咔」也去掉。
+  - 音量：风两层 0.5 / 0.026；蝉 0.32 再过 7.2 kHz lowpass。**实测**（假 AudioContext 跑一遍缓冲）：
+    棕噪声 RMS ≈ 0.199、峰值 0.88，蝉 RMS ≈ 0.109、峰值 0.55，没有 NaN / Infinity —— 都是背景声的量级。
+- **`useAmbient()` 挂在 `App.tsx` 顶层**（不是书房里）：去统计页 / 阅读页时书房卸掉了，声音还得在；
+    `ambient` 这一份 state 同时递给 `Shelf`（留声机）与 `Desk` → `Settings`（设置页那一条）。
+- **留声机成了开关**：`Shelf.tsx` 里 `li.decor-item.gramophone` 的 23 个零件包进 `.gramo-button`
+  （`position: absolute; inset: 0` —— 所以 `.g-*` 那些 `left/bottom` 的原点仍是格子左下角，
+  **一个坐标都没动**）。原来那条 `title="留声机（以后会加入音频播放）"` 换成随状态变的提示
+  （开着报「现在放『林间风声』」、关着报「点一下打开」），`aria-pressed` 跟着 `on`。
+  CSS 新增 `.gramo-button`（透明无边框、按下不缩）+ `.playing .g-mouth` 的 `gramophone-breath`
+  （3.6 秒一轮的暖光呼吸，只用 brightness + drop-shadow，**不 scale** —— 花瓣口是 `clip-path`，一缩就抖）
+  + 悬停 / `:focus-visible` 提亮；`prefers-reduced-motion` 下不呼吸、光留着（它仍是「在响」的信号）。
+- **设置页多一条**：`Settings` / `SettingsSheet` 多一个可选的 `ambient?: AmbientState`（`Desk` 从 `App`
+  转交），在「书架的样子」前面渲染一节「书房的声音」+ 一条 `ToggleItem`（显示路径
+  `AMBIENT_SETTING_PATH = "shelf.ambient"`，措辞加进 `lib/settingsText.ts` 的 `WORDS` 与 `valueWords`：
+  `on` → 「一直在响」、`off` → 「静音」）。它和留声机是**同一个开关**（同一份 state），在哪儿点另一处
+  立刻跟着变；`onChange` 里先比一次再 `toggle()`，避免受控组件连点把自己翻回去。页脚「只存本机」那句
+  改成「『书房的声音』与『书架的样子』只存本机」。
+- **几处刻意没做**：没加音量滑杆（用户要的是开关，多根滑杆就多一份要存的偏好）；没按日出 / 日落逐日算
+  （书房的窗本来就只认 6 / 18 两个整点，声音跟它走才对得上）；收音机与黑胶仍不可点。
+
+**验证**：
+- 纯函数（临时脚本 tsc 编到 `/tmp` 跑，跑完删）：`ambientTrackOf` 七个钟点 —— 0:00 / 5:59 → 蝉、
+  6:00 / 12:00 / 17:59 → 风、18:00 / 23:59 → 蝉；`loadAmbientOn()` 无 `window` 时默认 `true`；
+  `settingWords("shelf.ambient")` 与 `plainValue` 两种读法都对。
+- 音频图（另一个临时脚本，假 `AudioContext`）：风 → 蝉 → 关 → 再放同一段 → `dispose`，
+  缓冲长度 6 / 5 / 8 秒各对、首样本淡到 0、没有 NaN / Infinity、峰值不爆、`notify` 依次
+  `true, true, false`、重复 `play` 同一段不重新起声部、`dispose` 后 `ctx` 为 null。
+- `npx tsc --noEmit` exit 0；`npm run build` ✓（`dist` JS 880.26 kB / CSS 117.28 kB）。
+- 声音的**真机听感**自动化测不了：`npm run tauri dev` 里应能听到「一打开就有一点风（白天）/ 蝉（夜里）」、
+  点留声机能静音再打开、若第一次被自动播放策略挡住则碰一下窗口就响。
+
+**文档**：`README.md` 摆件那一句（留声机 = 白噪音开关）、`docs/Paget 使用手册.txt`（第一章加一段声音、
+第八章「书房的声音」两条）、本文件、`progress.md`、`systemPatterns.md` 第 32 条。
+
+## 本次改动（2026-10-16）：新增成就「🌈 五颜六色」（四种自定义导读色 + 读完一本书）
+
+**需求**：用户原话「添加一个成就，五颜六色，达成条件：阅读完一本书，且使用了 4 种不同的自定义颜色
+（光点，下划线，波浪线）」。即：**同一本书**上**挑过 ≥4 种颜色**（三样加起来去重数，出厂色不算）、
+**且这本书标了读完**。
+
+**改了什么**（内核判定 + 界面只上报，条件仍只认「一个指标 OP 数字」）：
+
+| 文件 | 改动 |
+| --- | --- |
+| `core/wreader/data/achievements.json` | 新增 `colorful`（「🌈 五颜六色」，操作彩蛋，`colorful_books >= 1`），定义 **43 → 44 条** |
+| `core/wreader/achievements.py` | `COLORFUL_COLORS = 4`；`_COLOR_RE` + `_mark_color` / `_mark_colors`（认 `#rrggbb` / `#rgb`，小写归一、三位展开、认不出的项丢掉）；状态里**每本书**多一份 `colors`（`empty_state` / `_normalise` / `merge_states` 都带上，合并时**取并集**）；`_record_colors` 由 `session_end` 与 `progress_update` 都调用；新指标 `_colorful_books`（书标了读完 **且** 颜色数 ≥ 4）在 `compute_metrics` 里以 `colorful_books` 露出去 |
+| `core/wreader/serve.py` | `session` 把入参 `guide_colors` 带进成就事件（载荷里的 `colors`）；`finish` **开始发 `book_finish`**（本来就在 `EVENTS` 白名单里、从没人发过），返回里带上 `unlocked` |
+| `src/lib/core.ts` | `recordSession` 多一个可选 `guideColors`（→ `guide_colors`） |
+| `src/views/Reader.tsx` | `guideColorsUsed` ref + 一个盯三枚颜色偏好的 `useEffect`（**改了又改回也算挑过**，空串不收），退出时随 `session` 交上去 |
+| `core/tests/test_achievements.py` 等 | 新增约 10 例（颜色归一 / 去重 / 按书攒 / 必须同时读完 / 并集合并 / 指标口径）＋ `test_serve.py` 一例（`guide_colors` 真的传进成就、`finish` 发事件）；总数 43 → 44 的断言散落在 `test_stats.py` / `test_cli.py`；老的三处「每本书记录的形状」补上 `"colors": []` |
+
+**四处取舍**：
+
+1. **合取塞进一个派生指标，不往条件语法里加 `and`** —— 条件 DSL 只有 `metric OP number` 一条，
+   而「读完」在内核索引（`progress.finished`）、「颜色」在成就状态（`books[id].colors`）：
+   `colorful_books` 在同一次 `compute_metrics` 里把两边**合起来**数，`achievements.json` 里就还是
+   一行 `colorful_books >= 1`。这个套路 `geo_feud` / `env_flags` 早就用了。
+2. **颜色按「书」攒，不是全机一个集合** —— 四本书各用一种颜色不该解锁（条件那句是「读完**一本书**」）；
+   同一本书分几场读、中间换过又换回，都并进那一份集合里（`_record_colors` 走并集）。
+3. **界面只报「这一场挑过的」，内核不认识 `reader.prefs`** —— 三个颜色键存在界面（空串 = 出厂色），
+   阅读页用一个 ref 攒这一场碰过的非空值，`session` 时一起交；出厂色（空串）一律不进集合，
+   所以「没换过颜色」永远是 0 种，老用户不会被历史数据莫名其妙解锁。
+4. **`finish` 补发 `book_finish`** —— 书架上「标记已读」从前只改索引、不结算成就（`book_finish`
+   在白名单里却从没人发过），于是这条成就（以及「🏁 第一本」）得等到下次开书 / 下次退出才亮。
+   现在标读完当场结算（标回未读不发），`unlocked` 也一并回报给界面。
+
+**验证**：`core/.venv/bin/python -m pytest core/tests` → **813 passed**；`npx tsc --noEmit` exit 0；
+`npx vite build` ✓；两个一次性演示脚本（临时 `$WREADER_HOME`）都跑通了整条路 ——
+①一场 session 读到书末 + 交四种颜色 → `colorful_books = 1`、`book_finish` 当场解锁 `colorful`（1 / 1）；
+②只交三种颜色 / 三种颜色 + 另一本书读完 → 不解锁；③`finish` 标读完 → 发 `book_finish` 并解锁。
+真机上「挑四种颜色 → 读到书末 → 冒解锁提示」建议在 `npm run tauri dev` 里目视一眼。
+
+**文档**：`README.md`（成就 44 条 + 一句五颜六色 / 手册 416 行）、`docs/Paget 使用手册.txt`（第七章
+「一共 44 条」+ 一段五颜六色）、`core/README.md`（44 条 / 813 条）、`memory-bank/techContext.md`（813）、
+`memory-bank/systemPatterns.md`（第 31 条：这类「界面 + 内核」合起来才成立的成就怎么落地）。
+
+## 本次改动（2026-10-16）：导读三枚颜色按钮改成「换颜色」文字按钮
+
+**需求**：用户原话「光点，下划线和波浪线的自定义颜色按钮，需要修改，建议最好是文字按钮切换。」
+追问后用户选定「保留任意取色，但按钮改成文字（写『换颜色』，不显示色值），点开才弹系统取色器」。
+
+**改了什么**：下栏「档位」浮层里那三枚颜色控件（光点 / 下划线 / 波浪线）从**原生取色器压成的小色块**
+换成**写着「换颜色」的木头文字按钮**（**一样占一行**，见下），点一下仍弹系统取色盘，
+**颜色逻辑与存档键一个字节没动**
+（`guideColorVars` / `guideSwatchColor` / `guideDotColor` / `guideLineColor` / `guideWaveColor` 全原样）。
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/views/Reader.tsx`（2,009 → 2,016 行） | 三枚 `<input className="pref-color" type="color">` 各自换成 `<label className="pref-color-btn">换颜色<input type="color" …/></label>`，且**各占一个 `.pref-row`**：原来的 `value` / `aria-label` / `onChange`（`guideDotColor` / `guideLineColor` / `guideWaveColor`）原样搬进里面那枚取色器；`title`（含「当前 #xxxxxx」）留在 label 上 |
+| `src/App.css`（5,572 → 5,628 行） | 新增 `.pref-color-btn`（label 扮成木头文字按钮：透明圆角边、木纹底 `--texture`、内高光阴影，风格对齐基础 `button`；悬停 / `:focus-within` 描一道强调色的边；**`flex: 0 0 auto` + `white-space: nowrap`**，免得被压窄）与 `.pref-color-btn input[type="color"]`（`position: absolute; inset: 0` 铺满整枚 + `opacity: 0`，点哪儿都命中它 → 弹取色盘）；**`.pref-color` 那几条原样保留** |
+| `README.md` / `docs/Paget 使用手册.txt` | 「三枚取色器」→「三枚『换颜色』文字按钮（点一下弹系统取色盘，当前色值写在悬停提示里）」 |
+
+**四处取舍**：
+
+1. **`<label>` 包着藏起来的取色器，不用 `input.showPicker()`** —— `showPicker()` 要 **Safari 16+**，
+   而本项目一直只用 Safari 14 就有的东西；`<label>` 转发点击是最老的行为（Safari 14 就认），
+   取色器 `position: absolute; inset: 0` + `opacity: 0` 铺满整枚、点击直接命中它自己，**一行 JS 都不用写**。
+2. **`.pref-color` 不能动** —— 它同时被**纸色面板的「底色 / 字色」两枚取色器**用着（`Reader.tsx` 里那两枚
+   仍是小色块）；所以另起一个 `.pref-color-btn`，导读与纸色两边互不影响。
+3. **按钮上只写「换颜色」，当前色值只放在 `title` 提示里** —— 左侧的标签（光点 / 下划线 / 波浪线）
+   已经说清是谁的；想看当前色值悬停一下就有（也满足用户「不显示色值」这一条）。
+4. **三枚各占一行（用户复查后改）** —— 第一版把「光点 + 下划线」摆在同一个 `.pref-row` 里，
+   而 `.reader-prefs .pref-label` 是**定宽 `flex: 0 0 6.4rem`**、浮层本身只有 `min(17rem, 80vw)` 宽：
+   两个 6.4rem 的名字就把一行吃掉 12.8rem，剩下给两枚按钮的地方不够，「换颜色」于是被压成
+   **一个字符宽的长条、文字竖着折行**（波浪线那枚独占一行所以没事 —— 用户正是拿它做对照）。
+   改成**三行各一枚**（每行 = 6.4rem 名字 + 一枚按钮，约 11rem，宽宽松松），三枚按钮左边缘因此**对齐**；
+   再给按钮加 `flex: 0 0 auto` + `white-space: nowrap` 兜底，窗口再窄也不会被压折。
+
+**验证**：`npx tsc --noEmit` exit 0；`npx vite build` ✓（CSS 115.96 → **116.50 kB**、JS 873.48 → 873.54 kB）。
+**出图核对**：拿真实的 `src/App.css` + 浮层那三行 DOM 做成一张静态页，`qlmanage -t` 出图 ——
+三行名字（光点 / 下划线 / 波浪线）与三枚「换颜色」按钮**一一对齐、字号正常、文字一行放得下**（核完即删）。
+真机上「点文字弹系统取色盘、挑完即时生效」仍需在 `npm run tauri dev` 里目视一眼 —— 系统取色盘自动化测不了。
+
+## 本次改动（2026-10-16）：成就**删五条、改两条**（「双语者」改成「读完两本不同语言原文的书」）
+
+**需求**：用户原话「删除成就『开发者模式』『翻译狂魔』『极限尺寸』『词汇积累』『生词狂魔』；
+『节日读者』的成就描述改动成『在节日里打开 Paget 读书（元旦、春节、元旦）』；
+『双语者』的成就达成逻辑，改成看完两本不同语言原文的书籍」。
+
+**改了什么**（全在内核；界面一个字节没动 —— `Achievements.tsx` 那份列表本来就是内核
+`achievements` 原样画出来的，行 / 进度 / 解锁时间都不重算）：
+
+| 文件 | 改动 |
+| --- | --- |
+| `core/wreader/data/achievements.json` | **48 → 43 条**：删 `vocab_100`（📝 词汇积累）、`vocab_500`（🧠 生词狂魔）、`translate_maniac`（🔤 翻译狂魔）、`tiny_terminal`（🪡 极限尺寸）、`env_editable`（🧑‍💻 开发者模式）；`holiday_reader`（🎆 节日读者）的描述改成「在节日里打开 Paget 读书（元旦、春节、元宵节）。」；`translator`（🌍 双语者）由 `translations >= 1` 改成 `finished_languages >= 2` |
+| `core/wreader/library.py` | 新增 `LANGUAGE_SAMPLE_CHARS = 4000`、`detect_language()`（按**文字体系**认语言）与 `book_language()`（读正文开头的取样再交给前者） |
+| `core/wreader/stats.py` | `compute_metrics` 多一个指标 `finished_languages`：**标了读完**的书各认一次语言，数**不同的语言**有几种 |
+| `core/wreader/achievements.py` / `reader.py` | 注释同步（翻译键次数与窄窗秒数的采集照旧留着）；`LUNAR_HOLIDAYS` 补 7 条**元宵节**（2024–2030，= 春节日期 + 14 天），让「节日读者」真能在元宵节当天解锁 |
+
+⚠️ 「节日读者」括号里第三个节日：用户原话写的是「元旦」（与第一项重复），落地后专门问过一次，
+**他最终定成「元宵节」，并且要求内核真的能在元宵节当天解锁这条成就** —— 所以不是只改文案，
+`LUNAR_HOLIDAYS` 一并补了 7 条。「元宵节 = 正月十五 = 春节 + 14 天」，日期直接从表里那七条
+春节日期加出来（**不另查历书、不编**），并加了一条测试把这层关系钉住。现在描述里点名的三个节日
+（元旦 / 春节 / 元宵节）都在 `HOLIDAYS` / `LUNAR_HOLIDAYS` 里真能触发。
+
+**三处取舍**：
+
+① **只删成就定义，不拆采集层**。`translate_hits` / `narrow_seconds` 是阅读器实时记的、
+`editable` 是环境探测的一个信号 —— 三者都**照旧**（状态文件里那些计数是历史数据，
+删采集会让老 `achievements.json` 里的字段变成读不回来的孤儿；`test_reader.py` 的窄窗秒表与
+`test_achievements.py` 的增量语义也不比跟着震动）。只是**没有成就再引用它们**，相关注释
+同步改成「阅读器仍在记，只是现在没有成就引用」。
+
+② **「原文语言」只能从正文认**。书库记录里**从来没有语言字段**，而导入时正文统一写成
+UTF-8 摆在 `file_path`（图片模式的 PDF 转成文字后是 `text_path`），所以判定放在
+`library.detect_language()`：数正文里各**文字体系**的字数，最多的胜出、并列时按表里的顺序
+（假名 → 日语、谚文 → 韩语、汉字 → 中文、西里尔 → 俄语、拉丁 → 英语……），认不出（纯数字 /
+纯符号 / 读不到正文）给空串。**只用标准库、不联网、不查词典**；采样 **4000 字**（认体系
+用不着整本）。**边界**：中译本写的是中文就按中文算 —— 内核认不出「这是译作」，这条记成已知取舍。
+
+③ **数语言，不数书**。`finished_languages` 是「读完的书里有几种**不同的**语言」，同一语言
+读完几本仍只算一种，同一本书也只贡献一种。指标现算（只在有书标了读完时才去读那几本正文的开头），
+`book_language()` 把「认不出」一律降级成空串，所以缺文件 / 还没转换的 PDF **不会让统计整体失败**。
+
+**怎么验证的**：`core/.venv/bin/python -m pytest core/tests` → **802 passed**（原先 790）。
+新增：语言判定的参数化 7 例（中 / 英 / 日 / 韩 / 俄 / 认不出 / 空串）、「多数文字胜出」两个方向、
+`book_language` 正反各一例、`finished_languages` 一例（一种语言 → 两种语言 → 同语言再来一本仍是两种 →
+某本退回未读完只剩一种）、随包定义「删了哪五条 / 改了哪两条」钉住一例；老断言 48 → 43 共 6 处
+（`test_stats.py` 3 处、`test_cli.py` 2 处，外加 `metric_thresholds` 那条从 `translate_hits`
+改看 `finished_languages`）。另跑一次**真数据演示**：临时 `$WREADER_HOME` 放一本中文、一本英文、
+两本都标读完 → `compute_metrics` 报 `finished_languages = 2`，`check_achievements("book_finish")`
+当场解锁 `translator`（`2 / 2`；`list_achievements` 里 43 条、五个被删 id 一条都不在）。
+**追加（元宵节那一步）**：`test_achievements.py` 的 `holiday_of` 那条加了「2026-03-03 = 元宵节」
+「前一天不是」「2031 出表不认」三处断言，另加一条 `test_lantern_festival_stays_fourteen_days_after_the_spring_festival`
+把「元宵节 = 春节 + 14 天」逐条对上 → **803 passed**；再用临时 `$WREADER_HOME` 在 2026-03-03
+记一次 `daily_open`，`check_achievements("daily_open")` 当场解锁 `holiday_reader`。
+
+文档：`core/README.md`（48 → 43 条、790 → 803 条）、`memory-bank/techContext.md`（790 → 803）、
+`docs/Paget 使用手册.txt`（第七章「一共 43 条」）、`README.md` 成就那节补一句「双语者看的是
+读完的书有几种语言」。**界面与协议不用动**：`Achievements.tsx` / `Stats.tsx` 读的都是内核回来的行。
+
+**教训**：**给成就换条件时先看「这个数据有没有」** —— 双语者原先是 `translations >= 1`（一个现成计数），
+要改成「两种语言」才发现书库记录里根本没有语言字段；最后是「**判定放在能读到正文的那一层**
+（`library.book_language`）、**指标放进 `stats.compute_metrics`**」才对上这套「指标即条件、
+界面不重算」的分工。
+
+
+## 本次修复（2026-10-16）：书架搜索「结果看不见 / 一返回书架就全没了」
+
+**需求**：用户原话「首屏的搜索按钮弹出的搜索框，输入文字之后搜索结果无法显示，只有模糊的轮廓，
+一返回到书架界面全部消失。请修复这个问题」。
+
+**根因**：`.search-overlay`（`src/App.css`）那层**整屏**遮罩挂着
+`background-color: rgba(18, 11, 5, 0.3)` + `backdrop-filter: blur(8px)`。
+可搜索的设计是「**输入即时过滤身后的书架**」（输入框下方那行还写着「匹配 N 本」）——
+命中哪几本完全靠身后的书脊说话，8px 模糊再叠一层压暗，整片书架只剩一团轮廓，
+命中的书与没命中的从外观上分不开（「搜索结果无法显示，只有模糊的轮廓」）；
+而且整屏大小的 backdrop 层在 Tauri 的 WKWebView 里收起后常常不重绘，
+被它合成过的那片底衬留在空状态 —— 书架整片空掉（「一返回书架全部消失」）。
+
+**改了什么**：只动 `src/App.css` 的 `.search-overlay` 一条规则：
+
+| 项 | 原来 | 现在 |
+| --- | --- | --- |
+| `backdrop-filter` / `-webkit-backdrop-filter` | `blur(8px)` | **整条删掉**（这一层不再参与 backdrop 合成） |
+| 压暗那层底色 | `rgba(18, 11, 5, 0.3)` | `rgba(18, 11, 5, 0.22)`（只压一点点，身后的过滤结果看得清） |
+
+输入框自己带深色底（`rgba(24, 15, 8, 0.78)`）+ 白描边 + 外发光（`.search-input`），
+浮在变亮的遮罩上照样醒目，所以这次没有额外补样式。命中的书脊仍是回车后高亮 2 秒
+（`HIGHLIGHT_MS`，行为没动）；README 那节搜索的描述同步改口径（不再说 `backdrop-filter`）。
+
+**怎么验证的**：`npx tsc --noEmit` → exit 0；`npx vite build` ✓（58 modules、CSS 115.92 kB / gzip 26.67 kB）；
+拿产物 CSS 反查：`.search-overlay{...}` 里已**没有**任何 `backdrop-filter`，全库只剩原来那三处小弹层
+（`.book-menu` 6px / `.book-dialog` 4px / `.import-flight` 6px，都不是要「看清身后」的整屏遮罩）。
+
+**教训**：**别在「要让人看清身后内容」的整屏遮罩上挂 `backdrop-filter`** —— 它按定义就是把身后糊掉；
+整屏范围还容易踩上 WKWebView 的合成 / 重绘坑。要「压暗但看得清」就用普通半透明底色。
+
 ## 本次改动（2026-10-14，第三十五轮）：开发用的书架只留一本《Paget 使用手册》
 
 **需求**：用户原话「在开发命令 npm run Tauri dev 下，书架默认只有一本用户手册，内容是关于整个软件的
@@ -841,7 +1321,7 @@ print(config.all_paths())"` → **20 项**，其中 **`reader.*` 13 项**（`pag
 
 **还差一步（等人）**：出图能代替的只有「波浪本身长什么样」，**真机上那一块浮层**量不到 ——
 三枚取色器的排布（光点 / 下划线一行、波浪线一行）与平时字号下那条波浪的手感，
-要请在 `tauri dev` 里目视一眼（见 `progress.md` 待办 #8；觉得粗 / 浅就改 `App.css` 的
+要请在 `tauri dev` 里目视一眼（前端没有自动化测试；觉得粗 / 浅就改 `App.css` 的
 `.guide-wave` 里 `--wave-h`，或改 `src/assets/guide-wave.svg` 里 `stroke-width` 与振幅的比值）。
 
 
@@ -2417,10 +2897,10 @@ TSX 给的 CSS 变量与 App.css 真正读的**逐一对得上** / 九个 `@keyf
 
 ## 本机数据现状
 
-- `.wreader/library.json`：**2 本书** —— 《70回本》（作者 水浒传，4894 行，0.0%）、
-  《西游记》（作者 unknown，8352 行，1.0%）。
-- `.wreader/` 累计阅读 **183 秒**（`2026-10-03`: 65、`2026-10-04`: 99、`2026-10-05`: 19）。
-- `.wreader/novels/`：`70回本_utf8.txt`(2.4 MB)、`西游记_utf8.txt`(2.1 MB)。
+- `.wreader/library.json`（2026-10-19 复核）：**1 本书** —— 《Paget 使用手册》
+  （作者 Paget，412 行）。
+- `.wreader/` 累计阅读 **35,892 秒**（最近一条是 `2026-10-16`: 422 秒）。
+- `.wreader/novels/`：`Paget 使用手册_utf8.txt`（26 KB）。
 - 归档目录 `<app data dir>/archived/` 目前**没有**封印（书架上一本限时书都没设）。
 
 ## 待办（按优先级）
@@ -2437,7 +2917,9 @@ TSX 给的 CSS 变量与 App.css 真正读的**逐一对得上** / 九个 `@keyf
    这类纯函数最容易先补单测（Vitest）—— 光点导读的 `stepGuideClock` / `stepGuideWalk`
    （含「空行一步跨过去、一条也不花时间」）/ `guideDotAt` /
    `guideTrailAt`、**跟着滚的 `guideFollowTop` / `guideNeedsMore`** 已经在临时脚本里验过
-   （109 + 22 条断言），但**还没进仓库**。
+   （109 + 22 条断言），但**还没进仓库**。**「🙈 我不看书」也要在 `npm run tauri dev` 里真跑**：
+   前台走秒、翻开书暂停、关掉沉浸归零、5 分钟进度上报、满 3600 秒解锁、重启后本次单次值归零
+   （内核峰值保留，但不会把多次启动相加）—— 这一条无法靠现有类型检查证明。
 2. **滚动模式往回滚会重建一屏**：`moveTo` 目标落在已加载段之外时用 `loadAt` 重取（滚动位置回顶）。
    前进方向有预取所以基本碰不到，回头方向会跳一下。
 3. **`positions.cfi` 列仍是预留**：阅读页走行号，CFI 只有表结构，等"直接打开一个 epub"。
@@ -2457,11 +2939,10 @@ TSX 给的 CSS 变量与 App.css 真正读的**逐一对得上** / 九个 `@keyf
 ## 会话级注意事项
 
 - **Paget 是本地 git 仓库**（2026-10-05 `git init` + 首次提交，无远端）；改了哪些文件看 `git status` / `git diff`。
-- ⚠️ **这台开发机上现在没有 `../wreader` 源码**（2026-10-09 核实：`~/.zshrc` 里
-  `alias werd=…/Downloads/wreader/.venv/bin/werd` 已是悬空路径，Spotlight 也只剩冻结点里那份）。
-  于是 `tauri dev` 的内核必须**显式指**：`WREADER_CORE_COMMAND="$PWD/src-tauri/binaries/werd-core/werd-core"`
-  （实测可用，数据在 `<repo>/.wreader`）或 `WREADER_CORE_PYTHON=<装了 wreader 的解释器>`。
-  别顺手把它写进代码里当默认：开发构建**故意不认**随包冻结点（见第十三轮那节）。
+- **内核源码与 venv 都在仓库里**（2026-10-11 起）：`core/` + `core/.venv`。`tauri dev` 的自动探测
+  会优先用它（`core_client.rs` 的 `dev_interpreter_in`），一般不需要显式指；只有要验随包冻结点时才用
+  `PAGET_CORE_COMMAND="$PWD/src-tauri/binaries/paget-core/paget-core"`（数据仍在 `<repo>/.wreader`）。
+  `../wreader` 是 2026-10-11 之前的历史路径，现在不存在；别再照旧命令设 `WREADER_CORE_COMMAND`。
 - **内核的 stderr 是「管道 + 一条读线程」**（`watch_stderr`），每行仍 `eprintln!` 到终端，
   尾部 16 行留在 `StderrLog` 里给报错用。**别把它改回 `Stdio::inherit()`** —— 那样首屏又会
   只剩一句「the core exited without answering」，真正的原因（`ModuleNotFoundError` 之类）

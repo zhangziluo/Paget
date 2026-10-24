@@ -192,7 +192,7 @@ def test_achievements_lists_progress(capsys, monkeypatch) -> None:
     # 全新环境下应当一个都没解锁
     assert cli.main(["achievements"]) == 0
     out = capsys.readouterr().out
-    assert "已解锁 0/48" in out
+    assert "已解锁 0/45" in out
     # 并列出未解锁项的名字
     assert "开卷有益" in out
 
@@ -229,7 +229,7 @@ def test_achievements_marks_one_as_done(capsys, imported, monkeypatch) -> None:
     # 读过一本书（开卷有益）+ 书库非空（书库初成），应当解锁 2 个
     assert cli.main(["achievements"]) == 0
     out = capsys.readouterr().out
-    assert "已解锁 2/48" in out
+    assert "已解锁 2/45" in out
     assert "开卷有益" in out
     assert "书库初成" in out
 

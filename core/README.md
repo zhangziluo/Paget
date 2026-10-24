@@ -50,7 +50,7 @@ core/.venv/bin/python -m pytest core/tests -q
 | `wreader/serve.py` | 无头内核：stdin 一行一个 JSON 请求，stdout 一行一个 JSON 回复 |
 | `wreader/library.py` / `pdf.py` / `mobi.py` | 导入与格式转换（PDF 默认只收文件 + 数页数，抽文字是另一条按需的路） |
 | `wreader/reader.py` | 终端阅读器（curses）：`a` 键的自动翻页、走法都在这儿；界面那套与它同一个语义 |
-| `wreader/stats.py` / `achievements.py` | 时长、统计报告与 48 条成就定义（`data/achievements.json`） |
+| `wreader/stats.py` / `achievements.py` | 时长、统计报告与 45 条成就定义（`data/achievements.json`） |
 | `wreader/config.py` | `settings.toml` 的 schema 与默认值 |
 | `wreader/data/` | 必须跟着包走的资源（成就定义），冻结内核时会原样收集 |
-| `tests/` | pytest：内核自己的 790 条（跑在临时 `$WREADER_HOME` 上） |
+| `tests/` | pytest：内核自己的 814 条（跑在临时 `$WREADER_HOME` 上） |

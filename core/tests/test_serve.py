@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 # 被测模块 + 内核（直接读索引断言落库结果）
-from wreader import config, library, serve
+from wreader import achievements, config, library, serve
 
 
 def _raw(method: str, **params: Any) -> Dict[str, Any]:
@@ -308,6 +308,29 @@ def test_session_with_ranges_counts_words_once(imported: Dict[str, Any]) -> None
     assert len(_book(imported["zh"])["progress"]["sessions"]) == 2
 
 
+def test_session_keeps_the_custom_guide_colours(imported: Dict[str, Any]) -> None:
+    """``guide_colors`` is handed to the engine, which keeps it per book."""
+    _result(
+        "session",
+        book_id=imported["zh"],
+        position=4,
+        percentage=50.0,
+        seconds=120,
+        lines_read=4,
+        # 界面挑过的导读色：大写与三位简写其实是同一种颜色
+        guide_colors=["#FF0000", "#f00", "#00ff00", "换颜色"],
+        started="2026-03-01T20:00:00",
+        ended="2026-03-01T20:02:00",
+    )
+    # 去重 + 收小写之后记在这本书名下
+    assert achievements.load_state()["books"][imported["zh"]]["colors"] == [
+        "#00ff00",
+        "#ff0000",
+    ]
+    # 没传 guide_colors 的会话（终端阅读器就是这样）不会写这一栏
+    assert imported["en"] not in achievements.load_state()["books"]
+
+
 def test_session_can_skip_the_history(imported: Dict[str, Any]) -> None:
     """``record_history=False`` stores the position but adds no reading time."""
     # 不开记账
@@ -536,11 +559,11 @@ def test_finish_marks_a_book_read_and_back(imported: Dict[str, Any]) -> None:
     """``finish`` flips ``progress.finished`` and leaves the position alone."""
     # 先写一点进度：finish 不该动它
     _result("position", book_id=imported["zh"], position=4, percentage=44.0)
-    # 标成已读，回执里带回最终状态
-    assert _result("finish", book_id=imported["zh"], finished=True) == {
-        "book_id": imported["zh"],
-        "finished": True,
-    }
+    # 标成已读，回执里带回最终状态（外加这一次新解锁的成就，见下一条测试）
+    result = _result("finish", book_id=imported["zh"], finished=True)
+    assert result["book_id"] == imported["zh"]
+    assert result["finished"] is True
+    assert isinstance(result["unlocked"], list)
     # 落库了
     assert _book(imported["zh"])["progress"]["finished"] is True
     # 书单的扁平行跟着变（界面直接画这一列）
@@ -558,6 +581,23 @@ def test_finish_defaults_to_read(imported: Dict[str, Any]) -> None:
     # 不传 finished：缺省就是已读
     assert _result("finish", book_id=imported["zh"])["finished"] is True
     assert _book(imported["zh"])["progress"]["finished"] is True
+
+
+def test_finish_fires_a_book_finish_event(imported: Dict[str, Any]) -> None:
+    """Marking a book read settles the achievements right there.
+
+    ``finish`` is the shelf's "标记已读"; it is also the moment a book *was*
+    finished, so it fires ``book_finish`` -- that is what lets 「🏁 第一本」 (and
+    「🌈 五颜六色」) unlock without waiting for the next session.
+    """
+    result = _result("finish", book_id=imported["zh"], finished=True)
+    # 当次就解锁了「读完第一本」
+    assert "book_finished" in [record["id"] for record in result["unlocked"]]
+    # 事件本身也记在状态文件里
+    assert achievements.load_state()["counters"]["book_finish"] == 1
+    # 标回未读不算「读完一本」：不再发这个事件
+    _result("finish", book_id=imported["zh"], finished=False)
+    assert achievements.load_state()["counters"]["book_finish"] == 1
 
 
 def test_finish_needs_a_book_id() -> None:

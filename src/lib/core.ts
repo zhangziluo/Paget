@@ -22,6 +22,7 @@ import type {
   BookRecord,
   Bookmark,
   BookRow,
+  BookSearchResult,
   ConfigGet,
   ConfigSet,
   CorePaths,
@@ -72,6 +73,15 @@ export function indexBook(bookId: string): Promise<IndexReport> {
 /** Full-text search over the local index. */
 export function searchCache(query: string, limit = 30): Promise<SearchHit[]> {
   return invoke<SearchHit[]>("search_cache", { query, limit });
+}
+
+/** Search inside one book; each hit carries the exact line to jump to. */
+export function searchBook(
+  bookId: string,
+  query: string,
+  limit = 80,
+): Promise<BookSearchResult> {
+  return invoke<BookSearchResult>("search_book", { bookId, query, limit });
 }
 
 /** Remember the GUI's own position (the authoritative one goes to the core). */
@@ -144,6 +154,11 @@ export async function bookToc(bookId: string): Promise<TocEntry[]> {
  *
  * `ranges` is the list of `[start, end]` line ranges walked through, so the core
  * counts words it has not counted before (re-reading a page adds nothing).
+ *
+ * `guideColors` is the custom colours the reader saw picked for the guide marks
+ * (光点 / 下划线 / 波浪线) during this session -- the core keeps them per book,
+ * which is what the 「五颜六色」 achievement counts.  Only colours the user actually
+ * chose belong here (the shipped ones are not custom).
  */
 export function recordSession(params: {
   bookId: string;
@@ -155,6 +170,8 @@ export function recordSession(params: {
   bookmarks: Bookmark[];
   started: string;
   ended: string;
+  /** 这一场里挑过的自定义导读色（`#rrggbb`）；没挑过就是空数组 */
+  guideColors?: string[];
 }): Promise<SessionResult> {
   return coreRequest<SessionResult>("session", {
     book_id: params.bookId,
@@ -165,6 +182,8 @@ export function recordSession(params: {
     ranges: params.ranges,
     // 与终端阅读器一样：位置、书签、时长一起交，且按行区间去重
     bookmarks: params.bookmarks,
+    // 导读那三样挑过的颜色：内核按书记一份（「五颜六色」看的就是它）
+    guide_colors: params.guideColors ?? [],
     started: params.started,
     ended: params.ended,
   });

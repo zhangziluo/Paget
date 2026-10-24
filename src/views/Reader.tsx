@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -18,10 +19,12 @@ import {
   recordSession,
   saveCorePosition,
   saveGuiPosition,
+  searchBook,
   setGuiSetting,
 } from "../lib/core";
 import PdfReader from "../components/PdfReader";
 import AutoCheckDialog from "../components/AutoCheckDialog";
+import { Plush } from "../components/Plush";
 import ReaderConfigPanel from "../components/ReaderConfigPanel";
 import { useAutoTurn, type AutoTurn } from "../lib/useAutoTurn";
 import {
@@ -86,10 +89,13 @@ import {
   type GuideProgress,
   type GuideRow,
 } from "../lib/readingGuide";
+import { TOYS, loadToySettings, placedToys } from "../lib/toyPrefs";
 import type {
   BookRow,
   Bookmark,
+  BookSearchHit,
   GuiPosition,
+  IndexReport,
   TextSlice,
   TocEntry,
   Unlocked,
@@ -119,6 +125,32 @@ type Panel = "type" | "theme" | "guide" | "config" | null;
 
 /** 屏幕中间多大一块算「中间区域」——点它呼出 / 收起上下两栏（比例，0~1）。 */
 const MIDDLE_BAND = { xMin: 0.25, xMax: 0.75, yMin: 0.18, yMax: 0.82 };
+
+/**
+ * 四角热区有多大（比例，0~1）：左上「书架略缩图」、右上「书签」、左下「目录」、右下「玩偶」。
+ *
+ * 中间那块（`MIDDLE_BAND`）照旧呼出上下两栏；四角与它**不重叠**，所以两套交互各管各的。
+ */
+const CORNER_HIT = 0.22;
+
+/**
+ * 左右两条「上一页 / 下一页」热区的边线（比例，0~1）。
+ *
+ * 比四角（`CORNER_HIT`）窄一档：中间那一圈 0.18–0.22 / 0.78–0.82 是死区，
+ * 贴着正文边缘点也不会误翻页。
+ */
+const EDGE_HIT = 0.18;
+
+/** 左上角小书架里那几根书脊：颜色与高矮都岔开一点，像一排放满的书 */
+const PEEK_SPINES = [
+  { color: "#a3452f", height: 82 },
+  { color: "#3f6b8a", height: 94 },
+  { color: "#c08a3e", height: 70 },
+  { color: "#4f7a45", height: 88 },
+  { color: "#8a5f8f", height: 76 },
+  { color: "#7a5a2e", height: 92 },
+  { color: "#b05a4a", height: 66 },
+];
 
 /**
  * The reading view: the core's text, scrolled inside a **book**.
@@ -198,10 +230,41 @@ export default function Reader(props: {
   // 上下两栏默认都收着，点屏幕中间才呼出；进来先亮一句提示，几秒后自己消失
   const [barOpen, setBarOpen] = useState(false);
   const [hintVisible, setHintVisible] = useState(true);
+  // 左上角悬停：浮出「首页书架」的小略缩图（点它直接回书架）
+  const [shelfPeek, setShelfPeek] = useState(false);
+  // 左下角弹出的目录页（点标题跳到对应行）
+  const [tocOpen, setTocOpen] = useState(false);
+  // 右下角蹦出来的那只玩偶（null = 收着；书同时往左让一让，右侧桌面加宽）
+  const [toy, setToy] = useState<{ id: string; label: string } | null>(null);
+  // 右下角能蹦出来的玩偶：书架摆着的那几只；一只也没摆就三只里随便挑
+  const toyPool = useMemo(() => {
+    const placed = placedToys(loadToySettings());
+    return placed.length ? placed : TOYS;
+  }, []);
+  // 在本书里搜：输入框 + 结果列表（浮层，Esc 关闭；点结果跳到那一行）
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchHits, setSearchHits] = useState<BookSearchHit[]>([]);
+  // 这批结果对应哪个词：回车时拿来对一下，别把上一轮的结果当成这一轮的
+  const [searchHitsFor, setSearchHitsFor] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchStatus, setSearchStatus] = useState("");
+  // 跳到某一行之后短暂高亮它（2.6 秒后自己淡掉）
+  const [searchHitLine, setSearchHitLine] = useState<number | null>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  // 每次输入 / 关闭都 +1：慢一步回来的旧结果直接丢掉
+  const searchSeq = useRef(0);
+  // 正在跑的建索引任务（连打几个字时不重复建）
+  const indexRun = useRef<Promise<IndexReport> | null>(null);
+  // 这本已经确认没有可索引的正文：别再反复建空索引
+  const noSearchText = useRef(false);
+  const searchHitTimer = useRef(0);
   // pdf 的两种看法：默认**按图片浏览**（见 lib/pdfView.ts），偏好按书存在本机设置里
   const isPdf = (props.book.format ?? "") === "pdf";
   const [pdfViews, setPdfViews] = useState<Record<string, PdfView>>({});
   const [pdfView, setPdfView] = useState<PdfView>(DEFAULT_PDF_VIEW);
+  // 只有文字视图能搜（图片模式没有可跳的行号；PDF 可先「转换成文字」）
+  const textMode = !isPdf || pdfView === "text";
 
   // 读一次本机偏好：读不到 / 坏 JSON 都当默认的图片模式（绝不能因此打不开书）
   useEffect(() => {
@@ -240,6 +303,9 @@ export default function Reader(props: {
   const [posChip, setPosChip] = useState<string | null>(null);
   // 本次会话的开始时刻
   const startedAt = useRef(new Date());
+  // 这一场里**挑过**的自定义导读色（光点 / 下划线 / 波浪线）：改了又改回去也算用过，
+  // 所以只往里加、不删；收尾时随会话一起交给内核（「五颜六色」按书攒够四种就解锁）
+  const guideColorsUsed = useRef<Set<string>>(new Set());
   // 读过的行区间（内核按区间去重，重读不加字数）
   const ranges = useRef<[number, number][]>([]);
   // 屏顶行号：定时器里要读到最新值，所以放 ref 而不是 state
@@ -768,6 +834,29 @@ export default function Reader(props: {
     el.scrollBy({ top: dir * el.clientHeight * SCREEN_SCROLL_RATIO, behavior: "smooth" });
   }, []);
 
+  /**
+   * 右下角：随机放一只玩偶出来。
+   *
+   * 已经从架上蹦出来一只时，再点就换一只**不同的**（只有一只可选时不换），
+   * 这样连点几下能挨个看一遍，不会老是同一只。放出来的同时书的右边收窄、
+   * 右侧那条桌面加宽，看着就是书往左让了让（见 App.css 的
+   * `.reader-book.shifted` 与 `.container.reader.toy-open`）。
+   */
+  const popToy = useCallback(() => {
+    setToy((current) => {
+      const pool =
+        toyPool.length > 1 && current
+          ? toyPool.filter((item) => item.id !== current.id)
+          : toyPool;
+      return pool[Math.floor(Math.random() * pool.length)] ?? null;
+    });
+    // 蹦出来就先把别的浮层收掉，免得挤在一起
+    setShelfPeek(false);
+    setTocOpen(false);
+    setBarOpen(false);
+    setHintVisible(false);
+  }, [toyPool]);
+
   /** ↑ / ↓：翻一行（与终端里的相同）。 */
   const moveLine = useCallback(
     (dir: number) => {
@@ -932,6 +1021,7 @@ export default function Reader(props: {
       if (guideChipTimer.current) window.clearTimeout(guideChipTimer.current);
       if (guideSyncTimer.current) window.clearTimeout(guideSyncTimer.current);
       if (guideSaveTimer.current) window.clearTimeout(guideSaveTimer.current);
+      if (searchHitTimer.current) window.clearTimeout(searchHitTimer.current);
     },
     [],
   );
@@ -962,6 +1052,19 @@ export default function Reader(props: {
     return () => window.clearTimeout(timer);
   }, [prefs]);
 
+  // 「这一场挑过哪几种颜色」只在这三样真的变了时才动（改字号、改纸色都不算）。
+  // 空串 = 出厂色，不算自定义，所以不进集合；换过的颜色留在集合里 —— 换来换去
+  // 最后又换回原色，那一次也算用过（成就问的是「用过几种」，不是「最后是什么色」）。
+  useEffect(() => {
+    for (const color of [
+      prefs.guideDotColor,
+      prefs.guideLineColor,
+      prefs.guideWaveColor,
+    ]) {
+      if (color) guideColorsUsed.current.add(color);
+    }
+  }, [prefs.guideDotColor, prefs.guideLineColor, prefs.guideWaveColor]);
+
   // 点面板外面收起它（面板里的输入框在 wrap 内，不会误关）
   useEffect(() => {
     if (!panel) return;
@@ -985,6 +1088,153 @@ export default function Reader(props: {
     const timer = window.setTimeout(() => setHintVisible(false), 3500);
     return () => window.clearTimeout(timer);
   }, []);
+
+  /** 打开「在本书里搜」：收起两栏，把键盘焦点交给输入框。 */
+  const openSearch = useCallback(() => {
+    // 图片模式没有可跳的行号；PDF 得先「转换成文字」。那里连这条浮层都不渲染，
+    // 所以只是不打开（键盘那边也不抢 ⌘F，交给系统自己的页内查找）。
+    if (!textMode) return;
+    setPanel(null);
+    setBarOpen(false);
+    setHintVisible(false);
+    setSearchOpen(true);
+  }, [textMode]);
+
+  /** 关掉搜索浮层；还在路上的旧结果一律作废。 */
+  const closeSearch = useCallback(() => {
+    searchSeq.current += 1;
+    setSearchOpen(false);
+    setSearching(false);
+  }, []);
+
+  // 切到图片模式（PDF 没有行号）时，把还开着的搜索收掉
+  useEffect(() => {
+    if (!textMode) closeSearch();
+  }, [textMode, closeSearch]);
+
+  /**
+   * 搜一次（输入防抖 / 自动建索引 / 丢弃过期结果都在这里）。
+   * 返回值就是这一轮的结果（里面已经 setState 了）：回车靠它拿到「刚搜出来的第一处」，
+   * 好直接跳过去；作废的一轮返回 null。
+   *
+   * 第一次搜一本没索引的书：先 `indexBook` 建好，再搜一次；建索引期间连打几个字
+   * 共用同一个任务，不会把同一本书反复索引。`seq` 是发起时的编号，回来时对不上就丢掉。
+   */
+  const runSearch = useCallback(
+    async (keyword: string, seq: number): Promise<BookSearchHit[] | null> => {
+      setSearching(true);
+      setSearchStatus("正在找…");
+      try {
+        let report = await searchBook(props.book.id, keyword, 80);
+        if (seq !== searchSeq.current) return null;
+        if (!report.indexed && !noSearchText.current) {
+          setSearchStatus("正在给这本书建立搜索索引…");
+          let task: Promise<IndexReport> | null = indexRun.current;
+          if (!task) {
+            // 成功 / 失败都把这一格放掉：失败的建索引任务不能一辈子占着，
+            // 否则后面每敲一个字都会拿到同一个已经 reject 的 promise
+            const shared = indexBook(props.book.id).finally(() => {
+              if (indexRun.current === shared) indexRun.current = null;
+            });
+            task = shared;
+            indexRun.current = shared;
+          }
+          const built = await task;
+          if (indexRun.current === task) indexRun.current = null;
+          if (seq !== searchSeq.current) return null;
+          // 正文为空（或索引切出 0 块）：记住，别每次输入都再建一遍
+          if (built.chunks === 0) noSearchText.current = true;
+          setSearchStatus(built.truncated ? "索引只覆盖了前半部分，正在找…" : "正在找…");
+          report = await searchBook(props.book.id, keyword, 80);
+          if (seq !== searchSeq.current) return null;
+        }
+        if (!report.indexed) {
+          setSearchHits([]);
+          setSearchHitsFor("");
+          setSearchStatus(noSearchText.current ? "这本书没有可搜索的正文" : "还没建立索引");
+          return [];
+        }
+        setSearchHits(report.hits);
+        setSearchHitsFor(keyword);
+        setSearchStatus(
+          report.hits.length === 0
+            ? `没有找到「${keyword}」`
+            : `找到 ${report.hits.length} 处` +
+                (report.truncated ? "（索引只覆盖前半部分）" : ""),
+        );
+        return report.hits;
+      } catch (err) {
+        if (seq !== searchSeq.current) return null;
+        setSearchHits([]);
+        setSearchHitsFor("");
+        setSearchStatus(String(err));
+        return [];
+      } finally {
+        if (seq === searchSeq.current) setSearching(false);
+      }
+    },
+    [props.book.id],
+  );
+
+  // 换书：搜索状态清空（同一时刻只搜当前这一本）
+  useEffect(() => {
+    searchSeq.current += 1;
+    noSearchText.current = false;
+    indexRun.current = null;
+    setSearchOpen(false);
+    setSearchQuery("");
+    setSearchHits([]);
+    setSearchHitsFor("");
+    setSearching(false);
+    setSearchStatus("");
+    setSearchHitLine(null);
+  }, [props.book.id]);
+
+  // 输入防抖：停手 280ms 再搜；每敲一个字先把上一轮结果作废
+  useEffect(() => {
+    if (!searchOpen) return;
+    const keyword = searchQuery.trim();
+    const seq = ++searchSeq.current;
+    if (!keyword) {
+      setSearchHits([]);
+      setSearchHitsFor("");
+      setSearching(false);
+      setSearchStatus("");
+      return;
+    }
+    setSearching(true);
+    setSearchStatus("正在找…");
+    const timer = window.setTimeout(() => void runSearch(keyword, seq), 280);
+    return () => window.clearTimeout(timer);
+  }, [searchOpen, searchQuery, runSearch]);
+
+  // 打开时聚焦输入框并全选：接着敲就是新词，回车就是第一处
+  useEffect(() => {
+    if (!searchOpen) return;
+    const timer = window.setTimeout(() => {
+      searchInput.current?.focus();
+      searchInput.current?.select();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [searchOpen]);
+
+  /** 点一条结果：收起浮层，跳到那一行，并短暂高亮它。 */
+  const jumpToSearchHit = useCallback(
+    (hit: BookSearchHit) => {
+      setSearchOpen(false);
+      setSearching(false);
+      searchSeq.current += 1;
+      setHintVisible(false);
+      setSearchHitLine(hit.line);
+      if (searchHitTimer.current) window.clearTimeout(searchHitTimer.current);
+      searchHitTimer.current = window.setTimeout(() => {
+        setSearchHitLine(null);
+        searchHitTimer.current = 0;
+      }, 2600);
+      jumpTo(hit.line);
+    },
+    [jumpTo],
+  );
 
   // 重新铺了一批（不是往下追加）就把滚动位置拉回顶部
   useLayoutEffect(() => {
@@ -1040,6 +1290,26 @@ export default function Reader(props: {
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
+      // ⌘F / Ctrl+F：阅读页自己的搜索（拦下浏览器的「页内查找」）；
+      // 已经开着就回到输入框（浏览器里再按一次也是这个意思），不关它。
+      // 图片模式没有可跳的行号，不拦，交还给系统
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        if (!textMode) return;
+        event.preventDefault();
+        if (searchOpen) {
+          searchInput.current?.focus();
+          searchInput.current?.select();
+        } else {
+          openSearch();
+        }
+        return;
+      }
+      // Esc 关搜索：**焦点在输入框里也认**（搜索框是全页浮层，Esc 就是走）
+      if (event.key === "Escape" && searchOpen) {
+        event.preventDefault();
+        closeSearch();
+        return;
+      }
       // 在下拉框 / 输入框里按方向键是在操作控件，别抢
       if (
         target &&
@@ -1047,6 +1317,12 @@ export default function Reader(props: {
           target.tagName === "SELECT" ||
           target.tagName === "TEXTAREA")
       ) {
+        return;
+      }
+      // `/`：与书架同一套手感，随手开搜索（焦点在按钮上时不抢空格，但 `/` 可以）
+      if (textMode && event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        openSearch();
         return;
       }
       switch (event.key) {
@@ -1078,11 +1354,16 @@ export default function Reader(props: {
           }
           break;
         case "Escape":
-          // Esc 一路往回退：先收面板（Aa / 纸色 / 档位 / 翻页设置），再收两栏，**都没有就记好账回书架**
+          // Esc 一路往回退：先收面板（Aa / 纸色 / 档位 / 翻页设置），再收目录 / 玩偶，
+          // 再收两栏，**都没有就记好账回书架**
           // （2026-10-14 用户要求：阅读模式下 Esc 默认应当退出到书架；与「← 书架」同一条路 ——
           //  经 finish() 落位置 / 时长 / 成就，不是直接关掉）
           if (panel) {
             setPanel(null);
+          } else if (tocOpen) {
+            setTocOpen(false);
+          } else if (toy) {
+            setToy(null);
           } else if (barOpen) {
             setBarOpen(false);
           } else {
@@ -1104,7 +1385,20 @@ export default function Reader(props: {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [moveLine, scrollScreen, panel, barOpen, setGuideLevel, toggleGuide]);
+  }, [
+    moveLine,
+    scrollScreen,
+    panel,
+    barOpen,
+    tocOpen,
+    toy,
+    setGuideLevel,
+    toggleGuide,
+    searchOpen,
+    openSearch,
+    closeSearch,
+    textMode,
+  ]);
 
   /** 改一项排版偏好：范围都夹好，「上下边距相等」时下边距跟着上边距。 */
   function updatePrefs(patch: Partial<ReaderPrefs>) {
@@ -1165,6 +1459,8 @@ export default function Reader(props: {
         linesRead,
         ranges: ranges.current,
         bookmarks: marks.current,
+        // 这一场挑过的自定义导读色（「五颜六色」：一本读完的书里攒够四种）
+        guideColors: [...guideColorsUsed.current],
         // ⚠️ 本地时间 + 秒级，别用 toISOString（见 coreStamp 的说明）
         started: coreStamp(startedAt.current),
         ended: coreStamp(ended),
@@ -1197,6 +1493,16 @@ export default function Reader(props: {
   // 屏顶这一行有没有书签（丝带的「插着 / 没插」状态）
   const markedHere = bookmarks.some((mark) => mark.line === topLine);
 
+  // 目录里「现在读到的那一章」：行号不超过屏顶的最后一条（`toc` 按行号升序）
+  const tocCurrent = useMemo(() => {
+    let line = -1;
+    for (const entry of toc) {
+      if (entry.line > topLine) break;
+      line = entry.line;
+    }
+    return line;
+  }, [toc, topLine]);
+
   // 纸面配色：先取「预设主题 + 亮暗」，被自定义背景 / 字色盖过之后就是最终的一套
   const palette = readerPalette(prefs);
   // 导读那几枚取色器**显示什么颜色**：自定义色优先，没填就给这一档的出厂色
@@ -1227,12 +1533,32 @@ export default function Reader(props: {
 
   return (
     <main
-      className={`container reader${barOpen ? " bars-open" : ""}`}
+      className={`container reader${barOpen ? " bars-open" : ""}${toy ? " toy-open" : ""}`}
       style={paperVars}
+      // 左上角悬停：鼠标一进那一小块就浮出「首页书架」的略缩图。
+      // 用 mousemove 判断而不是铺一块透明热区，是为了不挡住最上面几行正文的拖选。
+      onMouseMove={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const inPeek =
+          !barOpen &&
+          (event.clientX - rect.left) / rect.width < CORNER_HIT &&
+          (event.clientY - rect.top) / rect.height < CORNER_HIT;
+        // 值没变就不重渲染（mousemove 一秒几十次）
+        setShelfPeek((open) => (open === inPeek ? open : inPeek));
+      }}
+      onMouseLeave={() => setShelfPeek(false)}
       onClick={(event) => {
-        // 上下两栏 / 那几块面板都是浮层，点它们不算「点屏幕中间」
+        // 上下两栏 / 搜索 / 目录 / 书签丝带 / 书架略缩图 / 玩偶都是浮层，
+        // 点它们不算「点书页」（它们自己的 onClick 负责）
         const node = event.target as HTMLElement | null;
-        if (node?.closest(".reader-bar")) return;
+        if (
+          node?.closest(
+            ".reader-bar, .reader-search-scrim, .reader-toc, .reader-bookmark, .reader-shelf-thumb, .reader-toy",
+          )
+        ) {
+          return;
+        }
         // 拖选文字松手也会来一次 click，别把两栏抖出来
         const selection = window.getSelection();
         if (selection && !selection.isCollapsed) return;
@@ -1241,11 +1567,48 @@ export default function Reader(props: {
           swallowClick.current = false;
           return;
         }
-        // 只有屏幕中间那一块才算（比例判断，与窗口大小无关）
+        // 按比例算落点，与窗口大小无关
         const rect = event.currentTarget.getBoundingClientRect();
         if (!rect.width || !rect.height) return;
         const x = (event.clientX - rect.left) / rect.width;
         const y = (event.clientY - rect.top) / rect.height;
+        const left = x < CORNER_HIT;
+        const right = x > 1 - CORNER_HIT;
+        const top = y < CORNER_HIT;
+        const bottom = y > 1 - CORNER_HIT;
+
+        // 四个角：左上（略缩图由 hover 负责，点角落本身不做事）/ 右上书签 /
+        // 左下目录 / 右下随机玩偶
+        if (top && left) return;
+        if (top && right) {
+          setTocOpen(false);
+          void toggleBookmark();
+          return;
+        }
+        if (bottom && left) {
+          setTocOpen((open) => !open);
+          setBarOpen(false);
+          setPanel(null);
+          setHintVisible(false);
+          return;
+        }
+        if (bottom && right) {
+          popToy();
+          return;
+        }
+        // 左右两边（不含上下那两段角）：上一页 / 下一页，滚一屏。
+        // 这里用更窄的 `EDGE_HIT`，与四角之间留一圈死区
+        if (x < EDGE_HIT && y >= CORNER_HIT && y <= 1 - CORNER_HIT) {
+          setTocOpen(false);
+          scrollScreen(-1);
+          return;
+        }
+        if (x > 1 - EDGE_HIT && y >= CORNER_HIT && y <= 1 - CORNER_HIT) {
+          setTocOpen(false);
+          scrollScreen(1);
+          return;
+        }
+        // 屏幕中间那一块：呼出 / 收起两栏（比例判断，与窗口大小无关）
         if (
           x < MIDDLE_BAND.xMin ||
           x > MIDDLE_BAND.xMax ||
@@ -1254,7 +1617,8 @@ export default function Reader(props: {
         ) {
           return;
         }
-        // 呼出 / 收起两栏（收起时顺手把面板也带走）
+        // 呼出 / 收起两栏（收起时顺手把面板与目录也带走）
+        setTocOpen(false);
         if (barOpen) {
           setPanel(null);
           setBarOpen(false);
@@ -1297,6 +1661,15 @@ export default function Reader(props: {
         >
           保存位置
         </button>
+        {textMode ? (
+          <button
+            className="ghost"
+            title="在本书正文里找关键词（⌘F / Ctrl+F，或按 /）；点结果跳到那一行"
+            onClick={openSearch}
+          >
+            搜索
+          </button>
+        ) : null}
         <button
           className="ghost"
           title="给这本书建搜索索引：书架里搜正文要用；很长的书只建前半部分"
@@ -1418,39 +1791,46 @@ export default function Reader(props: {
                   ))}
                 </div>
               </div>
-              {/* 颜色：三样各一枚取色器 —— 光点是那颗小球（高光 / 光晕跟着它算），
+              {/* 颜色：三样各一枚「换颜色」文字按钮，**一样占一行**（挤在一行时两个按钮会被压成
+                  一字符宽、文字竖着折行）—— 光点是那颗小球（高光 / 光晕跟着它算），
                   下划线 / 波浪线是它们各自那一段线（两号的走法一样，只是笔迹不同）。
-                  都空着 = 出厂色，所以这里不写「默认值」这个概念，只给三枚色块 */}
+                  都空着 = 出厂色，所以这里不写「默认值」这个概念；点文字按钮弹系统取色盘，
+                  挑的颜色即时生效。按钮上只写「换颜色」，当前色值放在悬停提示里 */}
               <div className="pref-row">
                 <span className="pref-label">光点</span>
-                <input
-                  className="pref-color"
-                  type="color"
-                  value={guideColors.dot}
-                  aria-label="光点的颜色"
-                  title={`光点的颜色（当前 ${guideColors.dot}）`}
-                  onChange={(event) => updatePrefs({ guideDotColor: event.currentTarget.value })}
-                />
+                <label className="pref-color-btn" title={`光点的颜色（当前 ${guideColors.dot}）`}>
+                  换颜色
+                  <input
+                    type="color"
+                    value={guideColors.dot}
+                    aria-label="光点的颜色"
+                    onChange={(event) => updatePrefs({ guideDotColor: event.currentTarget.value })}
+                  />
+                </label>
+              </div>
+              <div className="pref-row">
                 <span className="pref-label">下划线</span>
-                <input
-                  className="pref-color"
-                  type="color"
-                  value={guideColors.line}
-                  aria-label="下划线的颜色"
-                  title={`下划线的颜色（当前 ${guideColors.line}）`}
-                  onChange={(event) => updatePrefs({ guideLineColor: event.currentTarget.value })}
-                />
+                <label className="pref-color-btn" title={`下划线的颜色（当前 ${guideColors.line}）`}>
+                  换颜色
+                  <input
+                    type="color"
+                    value={guideColors.line}
+                    aria-label="下划线的颜色"
+                    onChange={(event) => updatePrefs({ guideLineColor: event.currentTarget.value })}
+                  />
+                </label>
               </div>
               <div className="pref-row">
                 <span className="pref-label">波浪线</span>
-                <input
-                  className="pref-color"
-                  type="color"
-                  value={guideColors.wave}
-                  aria-label="波浪线的颜色"
-                  title={`波浪线的颜色（当前 ${guideColors.wave}）`}
-                  onChange={(event) => updatePrefs({ guideWaveColor: event.currentTarget.value })}
-                />
+                <label className="pref-color-btn" title={`波浪线的颜色（当前 ${guideColors.wave}）`}>
+                  换颜色
+                  <input
+                    type="color"
+                    value={guideColors.wave}
+                    aria-label="波浪线的颜色"
+                    onChange={(event) => updatePrefs({ guideWaveColor: event.currentTarget.value })}
+                  />
+                </label>
               </div>
               {prefs.guideDotColor || prefs.guideLineColor || prefs.guideWaveColor ? (
                 <p className="pref-note">
@@ -1854,10 +2234,113 @@ export default function Reader(props: {
         </div>
       </footer>
 
+      {/* 在本书里搜：一块浮在书页上的木牌。输入即搜（停手 280ms），结果是
+          「章节 · 第几行 + 那一行上下文」；点一条直接跳到那一行并亮一下。
+          Esc / 点旁边空白关掉；回车跳到第一处。 */}
+      {searchOpen ? (
+        <div
+          className="reader-search-scrim"
+          role="presentation"
+          onClick={(event) => {
+            // 浮层里的点击不要漏到 main 的「点中间呼出两栏」上
+            event.stopPropagation();
+            if (event.target === event.currentTarget) closeSearch();
+          }}
+        >
+          <form
+            className="reader-search"
+            role="search"
+            aria-label="在本书里搜索"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const keyword = searchQuery.trim();
+              if (searchHitsFor === keyword && searchHits[0]) {
+                jumpToSearchHit(searchHits[0]);
+              } else if (keyword) {
+                // 结果还没回来 / 上一轮是空的：立刻按当前词重搜一次，拿到第一处就跳
+                const seq = ++searchSeq.current;
+                setSearching(true);
+                setSearchStatus("正在找…");
+                void runSearch(keyword, seq).then((hits) => {
+                  if (hits && hits[0] && seq === searchSeq.current) jumpToSearchHit(hits[0]);
+                });
+              }
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="reader-search-head">
+              <span className="reader-search-eyebrow">
+                在《{props.book.title || props.book.id}》里找
+              </span>
+              <button
+                type="button"
+                className="ghost reader-search-close"
+                title="关掉搜索（Esc）"
+                aria-label="关闭搜索"
+                onClick={closeSearch}
+              >
+                ×
+              </button>
+            </div>
+            <div className="reader-search-field">
+              <span className="reader-search-icon" aria-hidden="true">
+                🔍
+              </span>
+              <input
+                ref={searchInput}
+                type="search"
+                value={searchQuery}
+                placeholder="输入关键词，点结果跳到那一行"
+                aria-label="搜索本书正文"
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setSearchQuery(event.currentTarget.value)}
+              />
+              {searching ? <span className="reader-search-busy">找…</span> : null}
+            </div>
+            <p className="reader-search-status" role="status">
+              {searching ? "正在找…" : searchStatus || "输入一个词，整本书里一次搜完"}
+            </p>
+            {searchHits.length > 0 ? (
+              <ul className="reader-search-list">
+                {searchHits.map((hit, index) => (
+                  <li key={`${hit.line}-${index}`}>
+                    <button
+                      type="button"
+                      className="reader-search-hit"
+                      onClick={() => jumpToSearchHit(hit)}
+                    >
+                      <span className="reader-search-hit-meta">
+                        <span className="reader-search-hit-title">{hit.title || "正文"}</span>
+                        <span className="reader-search-hit-line">第 {hit.line + 1} 行</span>
+                      </span>
+                      <span className="reader-search-hit-text">
+                        {hit.snippet.split(/(\[[^\]]*\])/g).map((part, partIndex) =>
+                          part.startsWith("[") && part.endsWith("]") ? (
+                            <mark key={partIndex}>{part.slice(1, -1)}</mark>
+                          ) : (
+                            <span key={partIndex}>{part}</span>
+                          ),
+                        )}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <div className="reader-search-foot">
+              <span>Esc 关闭</span>
+              <span>回车跳到第一处</span>
+              <span>⌘F / Ctrl+F 随时打开</span>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
       {/* 两栏都收着时给一句提示，几秒后自己消失 */}
       {hintVisible ? (
         <div className="reader-hint" role="status">
-          点屏幕中间呼出上下两栏
+          点中间呼出工具栏 · 四角各有小机关
         </div>
       ) : null}
 
@@ -1913,10 +2396,89 @@ export default function Reader(props: {
         {appending ? <p className="toast dim">正在往下接…</p> : null}
       </div>
 
-      {/* 一本书的骨架：封面在左边，右侧的纸页堆叠 / 书口是「底下还有多少页」。
-          正文就铺在这张纸上，整张纸自己滚 —— 没有分页，也就没有「翻页」动效 */}
-      <div className="reader-book">
-        <div className="book-cover" aria-hidden="true" />
+      {/* 左上角悬停浮出的小书架：点了就带着账回书架（与「← 书架」同一条路） */}
+      <button
+        type="button"
+        className={`reader-shelf-thumb${shelfPeek ? " open" : ""}`}
+        title="回书架（先把读到哪记好）"
+        aria-label="回书架"
+        tabIndex={shelfPeek ? 0 : -1}
+        onClick={() => void finish()}
+        onMouseMove={(event) => event.stopPropagation()}
+      >
+        <span className="peek-shelf" aria-hidden="true">
+          <span className="peek-shelf-row">
+            {PEEK_SPINES.map((spine) => (
+              <span
+                key={spine.color}
+                className="peek-spine"
+                style={{ backgroundColor: spine.color, height: `${spine.height}%` }}
+              />
+            ))}
+          </span>
+          <span className="peek-shelf-board" />
+        </span>
+        <span className="peek-label">回书架</span>
+      </button>
+
+      {/* 左下角点开的目录：按章节标题跳到那一行（内核认出来的那些） */}
+      {tocOpen ? (
+        <div className="reader-toc" role="dialog" aria-label="目录">
+          <div className="reader-toc-head">
+            <span>目录</span>
+            <button
+              type="button"
+              className="reader-toc-close"
+              title="收起目录"
+              aria-label="收起目录"
+              onClick={() => setTocOpen(false)}
+            >
+              ×
+            </button>
+          </div>
+          {toc.length > 0 ? (
+            <ol className="reader-toc-list">
+              {toc.map((entry) => (
+                <li key={entry.line}>
+                  <button
+                    type="button"
+                    className={tocCurrent === entry.line ? "on" : undefined}
+                    title={`跳到第 ${entry.line + 1} 行`}
+                    onClick={() => {
+                      jumpTo(entry.line);
+                      setTocOpen(false);
+                    }}
+                  >
+                    <span className="reader-toc-title">{entry.title}</span>
+                    <span className="reader-toc-line">{entry.line + 1}</span>
+                  </button>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="reader-toc-empty">这本书还没认出章节。</p>
+          )}
+        </div>
+      ) : null}
+
+      {/* 右下角蹦出来的玩偶：坐在露出来的木桌上，眼睛朝书页那边看。
+          点它一下就放回去，书也跟着回到原位 */}
+      {toy ? (
+        <button
+          type="button"
+          key={toy.id}
+          className="reader-toy"
+          title="点一下把它放回去"
+          aria-label={`把${toy.label}放回去`}
+          onClick={() => setToy(null)}
+        >
+          <Plush id={toy.id} label={toy.label} looking />
+        </button>
+      ) : null}
+
+      {/* 一本书的骨架：纸面铺到上 / 左 / 下三条屏幕边，只留右侧的书口。
+          玩偶蹦出来时书的右边收窄、右侧桌面加宽，看着就是书往左让了一让 */}
+      <div className={`reader-book${toy ? " shifted" : ""}`}>
         <div className="book-stack" aria-hidden="true" />
         <div className="reader-page">
           {/* 右上角那枚拟物书签：点一下插进这一页，再点一下拔出来 */}
@@ -1965,10 +2527,12 @@ export default function Reader(props: {
                   const guided = guideOn && index <= guideIndex;
                   const active = guided && index === guideIndex;
                   const lit = guided ? (active ? " active" : " passed") : "";
+                  // 搜索跳过来的那一行：短暂亮一块底色，方便一眼看见
+                  const matched = searchHitLine === slice.start + index;
                   return (
                     <p
                       key={slice.start + index}
-                      className={`reading-line${blank ? " blank" : paraStart ? " para-start" : ""}${lit}`}
+                      className={`reading-line${blank ? " blank" : paraStart ? " para-start" : ""}${lit}${matched ? " search-hit" : ""}`}
                     >
                       {/* 轨迹：当前行每一折一条（走过的整条、正在走的那折按进度长）。
                           条数是量完 rect 才知道的（空行没有字，不画），宽高每帧直接写 style */}

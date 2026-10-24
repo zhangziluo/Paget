@@ -1,0 +1,262 @@
+/*
+ * 阅读页「在本书里搜」浮层。
+ *
+ * 长得像顶栏那块木板：深木底、细线、米色字；结果一行一块哑光纸。
+ * 它压在正文与两栏之上（z-index 30），但用半透明墨色把页压暗一点，
+ * 一眼就知道现在是在「找」而不是在「读」。
+ */
+
+.reader-search-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: clamp(1.2rem, 8vh, 4.5rem) 1rem 1.2rem;
+  overflow-y: auto;
+  /* 压暗书页，但不把它完全遮死 —— 关掉之后视线还能落回刚才那一行 */
+  background: rgba(28, 17, 8, 0.28);
+}
+
+.reader-search {
+  width: min(46rem, 94vw);
+  max-height: calc(100vh - 3rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.8rem 0.95rem 0.7rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 14px;
+  background-color: var(--wood-surface);
+  /* 与顶栏同一块木料、同一张纹理；不用写死深色，浅色 / 深色主题都跟着走 */
+  background-image: var(--texture);
+  box-shadow:
+    var(--shadow-md),
+    0 18px 40px rgba(30, 18, 8, 0.38);
+}
+
+.reader-search-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* 「在《书名》里找」：小字、微透明，不跟输入框抢 */
+.reader-search-eyebrow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.8rem;
+  letter-spacing: 0.03em;
+  opacity: 0.78;
+}
+
+.reader-search-close {
+  flex: 0 0 auto;
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.reader-search-close:hover {
+  border-color: var(--wood-line);
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+/* 输入框外面那圈：聚焦时整圈亮成琥珀色 */
+.reader-search-field {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.15rem 0.7rem;
+  border: 1px solid var(--wood-line);
+  border-radius: 10px;
+  background-color: var(--field-bg, rgba(0, 0, 0, 0.24));
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2) inset;
+}
+
+.reader-search-field:focus-within {
+  border-color: var(--accent, #e0a24e);
+  box-shadow:
+    0 2px 5px rgba(0, 0, 0, 0.2) inset,
+    0 0 0 2px rgba(224, 162, 78, 0.22);
+}
+
+.reader-search-icon {
+  flex: 0 0 auto;
+  font-size: 0.82rem;
+  opacity: 0.6;
+}
+
+.reader-search-field input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 1rem;
+  /* 原生 search 的清空叉在深木底上太扎眼，自己有关闭键 */
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.reader-search-field input:focus {
+  outline: none;
+}
+
+.reader-search-field input::-webkit-search-cancel-button {
+  display: none;
+}
+
+/* 正在找：输入框右侧一枚小字，不闪不跳 */
+.reader-search-busy {
+  flex: 0 0 auto;
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  opacity: 0.6;
+}
+
+/* 状态 / 空结果都走这一行，高度固定，结果出来时面板不跳 */
+.reader-search-status {
+  min-height: 1.2rem;
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  opacity: 0.72;
+}
+
+.reader-search-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  /* 结果多时最后一行不要贴着页脚 */
+  scrollbar-gutter: stable;
+}
+
+.reader-search-hit {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.22rem;
+  padding: 0.48rem 0.62rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background-color: var(--surface-2);
+  /* 结果是一块哑光纸，不跟着全局按钮铺木纹 */
+  background-image: none;
+  color: inherit;
+  text-align: left;
+  opacity: 1;
+  box-shadow: none;
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease;
+}
+
+.reader-search-hit:hover {
+  border-color: var(--wood-line);
+  background-color: rgba(181, 101, 29, 0.16);
+  opacity: 1;
+}
+
+.reader-search-hit:active {
+  transform: translateY(1px);
+}
+
+.reader-search-hit-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  opacity: 0.7;
+}
+
+/* 章节名可能很长：让「第几行」始终靠右对齐 */
+.reader-search-hit-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.reader-search-hit-line {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+}
+
+.reader-search-hit-text {
+  font-size: 0.9rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* 关键词：与书架上那套 `[词]` 高亮同一副样子，只是这里用 <mark> */
+.reader-search-hit-text mark {
+  padding: 0 0.08em;
+  border-radius: 3px;
+  background-color: rgba(224, 162, 78, 0.36);
+  color: inherit;
+  font-weight: 600;
+}
+
+.reader-search-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  padding-top: 0.15rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  opacity: 0.52;
+}
+
+@media (max-width: 560px) {
+  .reader-search-scrim {
+    padding: 0.6rem 0.5rem;
+  }
+
+  .reader-search {
+    width: 100%;
+    max-height: calc(100vh - 1.2rem);
+    padding: 0.7rem 0.7rem 0.6rem;
+  }
+
+  .reader-search-foot span:last-child {
+    display: none;
+  }
+}
+
+/* 搜索跳过去的那一行：整行铺一层琥珀底色，2.6s 后自己化掉
+   （Reader.tsx 那边 2.6s 后把 .search-hit 摘掉，这里同步淡到透明） */
+.reading-line.search-hit {
+  border-radius: 4px;
+  animation: reader-search-hit 2.6s ease-out both;
+}
+
+@keyframes reader-search-hit {
+  0%,
+  45% {
+    background-color: rgba(224, 162, 78, 0.3);
+  }
+
+  100% {
+    background-color: transparent;
+  }
+}

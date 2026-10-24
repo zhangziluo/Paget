@@ -4,18 +4,18 @@ import { hashText } from "../lib/coverGenerator";
 import { shortcutKey, type ShortcutId } from "../lib/shortcuts";
 
 /**
- * 便利贴式功能入口：墙上那一栏里的三枚贴纸（设置 / 成就 / 统计）。
+ * 便利贴式功能入口：墙上那一栏里的四枚贴纸（统计 / 成就 / 设置 / 沉浸）。
  *
  * 一枚便利贴就是一格「能点的陈设」——它替掉了原来的日历挂件 / 徽章盒挂件 / 黄铜齿轮，
  * 位置仍在**主屏墙面上那一栏**（`.study-wall`，第二屏起整栏收起来，见 `App.css`）。
  *
- * 四件事都在这一个文件里说清楚：
+ * 五件事都在这一个文件里说清楚：
  *
  * 1. **长什么样**：和纸纹理是**纯 CSS** 叠出来的（细纤维 + 一道水痕 + 斜向纸色），
  *    不用图片、也不引 web font —— 与书房里那些纯 CSS 塑形的物件（藤条篮子 / 留声机）
  *    同一条理由：离线应用，一个纹理资产也不想多。
- * 2. **颜色与倾斜「随机」**：三色（米黄 / 淡粉 / 淡绿）**顺着 id 列表循环发下去**（三枚正好三色各一枚，
- *    起点取自整张列表的哈希），-3°~+3° 的倾斜按各自 id 的哈希 —— 看着随机，但每次打开都一样
+ * 2. **颜色与倾斜「随机」**：四色（米黄 / 淡粉 / 淡绿 / 淡蓝）**顺着 id 列表循环发下去**，
+ *    起点取自整张列表的哈希，-3°~+3° 的倾斜按各自 id 的哈希 —— 看着随机，但每次打开都一样
  *    （与封面配色、封印光点同一个做法：`hashText` 已经在 `lib/coverGenerator.ts` 里了，直接复用）。
  *    真随机会让每次重渲染都换一个模样，那是 bug 不是风味。
  * 3. **能拖**：拖动写的是 `transform` 偏移（不改版面），松手吸附（回到原位附近就吸回原位、
@@ -24,10 +24,14 @@ import { shortcutKey, type ShortcutId } from "../lib/shortcuts";
  * 4. **点一下**：撕下（向上飞出 + 转 15° + 淡出）之后才开面板 —— 面板一开 `Shelf` 就被
  *    `App.tsx` 卸下了，所以「贴回」要在挂载时补：上一次撕下的是哪一枚记在模块变量里
  *    （见 `lastTornId`），下次挂载时那一枚从上方飞回来。
+ *    **`toggle` 那一枚（「沉浸」）例外**：它不打开另一页，只切换当前模式，所以点一下立刻
+ *    切换、贴纸留在原地（否则「撕下」之后没有重新挂载，纸片会一直飞着不回来）。
+ * 5. **沉浸模式下**：另外三枚带 `disabled`，灰掉、既不能点也不能拖；「沉浸」自己仍然能点
+ *    （它是退出这个模式的唯一入口）。
  *
  * **连点 5 下**是彩蛋：翻到背面看一句随机的话。为了既能连点、又不让「点一下」变得迟钝，
  * 点一下先只是「被捏起来」（`.is-lifting`），`STREAK_MS` 之内没有后续点击才真的撕下去开面板；
- * 攒够 5 下就改成翻面，不开面板。
+ * 攒够 5 下就改成翻面，不开面板（`toggle` 那一枚不参与这个彩蛋）。
  */
 
 /** 位置记在本机哪个键（按便利贴 id 分开存 `{ dx, dy }`）。 */
@@ -37,8 +41,8 @@ export const STICKY_POS_KEY = "paget.sticky-note.v1";
 const LATE_START = 22;
 const LATE_END = 6;
 
-/** 三种纸色：米黄 / 淡粉 / 淡绿（具体色值在 `styles/sticky-note.css`）。 */
-const COLORS = ["butter", "blush", "mint"] as const;
+/** 四种纸色：米黄 / 淡粉 / 淡绿 / 淡蓝（具体色值在 `styles/sticky-note.css`）。 */
+const COLORS = ["butter", "blush", "mint", "sky"] as const;
 type NoteColor = (typeof COLORS)[number];
 
 /** 拖动超过这么多像素才算「在拖」，否则当成点击（与书架排序同一把尺）。 */
@@ -80,10 +84,19 @@ export type StickyNote = {
   text: string;
   /** 它其实是哪一页（悬停提示里写出来，别让人猜） */
   realName: string;
-  /** 快捷键 id（提示里带上「按 S」这类） */
-  shortcut: ShortcutId;
-  /** 点它要做的事（撕下动画之后才调） */
+  /** 快捷键 id（提示里带上「按 S」这类；「沉浸」没有快捷键，省略即可） */
+  shortcut?: ShortcutId;
+  /** 点它要做的事（撕下动画之后才调；`toggle` 那枚立刻调） */
   onClick: () => void;
+  /**
+   * 点一下是**切换一个模式**（「沉浸」），不是打开另一页。
+   * 这种贴纸不撕下、不参与连点彩蛋 —— 书架不会因为它被卸下，纸片得留在原地。
+   */
+  toggle?: boolean;
+  /** 这个模式正开着（贴纸点亮，`aria-pressed` 也报这一项） */
+  active?: boolean;
+  /** 沉浸模式下灰掉：点不动、也拖不动（「沉浸」自己不带这一项） */
+  disabled?: boolean;
 };
 
 /** 一枚贴纸的偏移（相对它在墙上的原位）。 */
@@ -127,7 +140,7 @@ function writeOffsets(map: OffsetMap) {
 }
 
 /**
- * 三色怎么分：**先按这一组 id 定一个起点，再顺着循环发下去** —— 三枚贴纸正好三色各一枚。
+ * 四色怎么分：**先按这一组 id 定一个起点，再顺着循环发下去** —— 四枚贴纸正好四色各一枚。
  * （每枚各自哈希会撞色：`stats` 与 `achievements` 都落在淡绿上，米黄一枚都没出现，试过。）
  * 起点来自 id 列表的哈希，所以同一组贴纸每次打开都分得一样。
  */
@@ -235,6 +248,8 @@ export default function StickyNoteNav(props: { notes: StickyNote[] }) {
 
   /** 点一下：先「捏起来」，连点窗口过去才真撕下；攒够 5 下改成翻面。 */
   function clickNote(note: StickyNote) {
+    // 沉浸模式里被灰掉的那几枚：按钮本身已经 disabled，这里再挡一道
+    if (note.disabled) return;
     // 刚拖完的那一下不算点击
     if (suppressClick.current) {
       suppressClick.current = false;
@@ -243,6 +258,25 @@ export default function StickyNoteNav(props: { notes: StickyNote[] }) {
     // 背面朝上时点一下 = 翻回来（不再开面板）
     if (flipped?.id === note.id) {
       setFlipped(null);
+      return;
+    }
+    // 「沉浸」这种开关：立刻切换，不撕下（书架不会重新挂载，纸片得留在原地）
+    if (note.toggle) {
+      // 刚点过另一枚、它还在「捏起来」等着撕下：这一下先把它取消 ——
+      // 否则 300ms 后它照样飞走、去开那一页，可那时沉浸模式已经开了
+      if (streak.current.timer !== null) {
+        window.clearTimeout(streak.current.timer);
+        streak.current.timer = null;
+      }
+      streak.current.count = 0;
+      streak.current.id = "";
+      setLiftingId(null);
+      setTearingId(null);
+      setFlipped(null);
+      // 撕下那一下若已经起步（记号也留了），这趟没开成面板：把记号一并撤掉，
+      // 免得下次回到书架时它莫名其妙从上面飞回来
+      lastTornId = null;
+      note.onClick();
       return;
     }
     const now = Date.now();
@@ -282,6 +316,7 @@ export default function StickyNoteNav(props: { notes: StickyNote[] }) {
 
   /** 按下：备一个「可能要拖」的手势（拖动写 transform，不动版面）。 */
   function startDrag(note: StickyNote, event: React.PointerEvent<HTMLButtonElement>) {
+    if (note.disabled) return;
     if (event.button !== 0) return;
     // 新手势开始：上一次拖动留下的「丢掉这次 click」作废
     suppressClick.current = false;
@@ -339,7 +374,7 @@ export default function StickyNoteNav(props: { notes: StickyNote[] }) {
     detachDrag.current = detach;
   }
 
-  // 三色按这一组 id 分（见 `colorsFor`）：三枚正好三色各一枚
+  // 四色按这一组 id 分（见 `colorsFor`）：四枚正好四色各一枚
   const colors = colorsFor(props.notes.map((note) => note.id));
 
   return (
@@ -349,6 +384,7 @@ export default function StickyNoteNav(props: { notes: StickyNote[] }) {
         const offset =
           drag?.id === note.id ? drag.offset : (offsets[note.id] ?? { dx: 0, dy: 0 });
         const flippedNow = flipped?.id === note.id;
+        const shortcutHint = note.shortcut ? `（按 ${shortcutKey(note.shortcut)}）` : "";
         const classes = [
           "sticky-note",
           look.color,
@@ -358,6 +394,8 @@ export default function StickyNoteNav(props: { notes: StickyNote[] }) {
           tearingId === note.id ? "is-tearing" : "",
           backId === note.id ? "is-returning" : "",
           flippedNow ? "is-flipped" : "",
+          note.active ? "is-active" : "",
+          note.disabled ? "is-disabled" : "",
         ]
           .filter(Boolean)
           .join(" ");
@@ -374,9 +412,10 @@ export default function StickyNoteNav(props: { notes: StickyNote[] }) {
               } as CSSProperties
             }
             // 生活化文案在前、真名与快捷键在后：好看，但别让人猜「调一调」是干什么的
-            title={`${note.text} —— ${note.realName}（按 ${shortcutKey(note.shortcut)}）`}
-            aria-label={`${note.text}：打开${note.realName}（快捷键 ${shortcutKey(note.shortcut)}）`}
-            aria-pressed={flippedNow}
+            title={`${note.text} —— ${note.realName}${shortcutHint}`}
+            aria-label={`${note.text}：${note.realName}${shortcutHint}`}
+            aria-pressed={note.toggle ? !!note.active : undefined}
+            disabled={note.disabled}
             onPointerDown={(event) => startDrag(note, event)}
             onClick={() => clickNote(note)}
           >

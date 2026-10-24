@@ -10,7 +10,7 @@ from __future__ import annotations
 # 构造状态文件内容
 import json
 # 注入固定时间，让日期相关断言可预测
-from datetime import datetime
+from datetime import datetime, timedelta
 # 类型注解：fixture 的返回类型写在属性里
 from typing import Any, Dict, List
 
@@ -144,7 +144,7 @@ def test_save_and_load_state_round_trip(isolated_home) -> None:
     assert achievements.unlocked_ids(back) == ["x"]
     assert back["counters"]["daily_open"] == 3
     assert back["metrics"]["days_opened"] == ["2026-01-01"]
-    assert back["books"]["b1"] == {"words": 42, "counted": [[0, 3]]}
+    assert back["books"]["b1"] == {"words": 42, "counted": [[0, 3]], "colors": []}
 
 
 def test_load_state_is_empty_on_a_fresh_install(isolated_home) -> None:
@@ -200,7 +200,7 @@ def test_load_state_normalises_hand_edited_values(isolated_home) -> None:
     # 负数夹回 0
     assert state["metrics"]["words_read"] == 0
     # 倒挂区间被丢掉，只留有效的
-    assert state["books"]["b"] == {"words": 10, "counted": [[0, 2]]}
+    assert state["books"]["b"] == {"words": 10, "counted": [[0, 2]], "colors": []}
 
 
 def test_load_state_seeds_once_from_the_legacy_library_block(isolated_home) -> None:
@@ -282,7 +282,7 @@ def test_record_event_counts_words_only_once_per_range() -> None:
     achievements.record_event(state, "progress_update", payload)
     achievements.record_event(state, "progress_update", payload)
     assert state["metrics"]["words_read"] == 4
-    assert state["books"]["b"] == {"words": 4, "counted": [[0, 1]]}
+    assert state["books"]["b"] == {"words": 4, "counted": [[0, 1]], "colors": []}
 
 
 # ------------------------------------------------------------------ check_achievements
@@ -500,6 +500,22 @@ def test_empty_state_has_every_new_metric() -> None:
     assert metrics["weekend_seconds"] == {}
 
 
+def test_record_event_keeps_the_longest_not_reading_session() -> None:
+    state = achievements.empty_state()
+    # 界面每 5 分钟报一次当前单次峰值：内核只留最大的那一次
+    achievements.record_event(state, "usage", {"seconds": 1200})
+    assert state["metrics"]["not_reading_session"] == 1200
+    # 另一次只用了 10 分钟：不该把已有的 20 分钟顶掉，也不该相加
+    achievements.record_event(state, "usage", {"seconds": 600})
+    assert state["metrics"]["not_reading_session"] == 1200
+    # 后来真坐满两小时：峰值跟着变大
+    achievements.record_event(state, "usage", {"seconds": 7200})
+    assert state["metrics"]["not_reading_session"] == 7200
+    # 坏值 / 负数不会把峰值拉回去
+    achievements.record_event(state, "usage", {"seconds": -5})
+    assert state["metrics"]["not_reading_session"] == 7200
+
+
 def test_record_event_folds_key_deltas_and_keeps_the_largest_peak() -> None:
     state = achievements.empty_state()
     # 阅读器送来的增量与峰值：增量累加，峰值取大的
@@ -612,10 +628,26 @@ def test_holiday_of_knows_fixed_dates_lunar_festivals_and_ordinary_days() -> Non
     # 农历节日查表：2026 春节是 2 月 17 日
     assert achievements.holiday_of(datetime(2026, 2, 17, 9, 0)) == "春节"
     assert achievements.holiday_of("2026-09-25T23:00:00") == "中秋节"
+    # 元宵节 = 春节 + 14 天：2026 春节 2/17 → 元宵 3/3
+    assert achievements.holiday_of(datetime(2026, 3, 3, 9, 0)) == "元宵节"
+    # 前一天不是，出了 2030 的表也不认
+    assert achievements.holiday_of(datetime(2026, 3, 2, 9, 0)) == ""
+    assert achievements.holiday_of(datetime(2031, 3, 3, 9, 0)) == ""
     # 普通日子与坏输入都是空串
     assert achievements.holiday_of(datetime(2026, 9, 23, 9, 0)) == ""
     assert achievements.holiday_of("nope") == ""
     assert achievements.holiday_of(None) == ""
+
+
+def test_lantern_festival_stays_fourteen_days_after_the_spring_festival() -> None:
+    # 元宵节那七条不是另查历书抄来的，是从春节那七条加 14 天推出来的：
+    # 钉住这层关系，以后谁改春节日期，元宵节会跟着露馅。
+    springs = {s: n for s, n in achievements.LUNAR_HOLIDAYS.items() if n == "春节"}
+    lanterns = {s: n for s, n in achievements.LUNAR_HOLIDAYS.items() if n == "元宵节"}
+    assert len(springs) == len(lanterns) == 7
+    for stamp in springs:
+        after = datetime.strptime(stamp, "%Y-%m-%d") + timedelta(days=14)
+        assert lanterns[after.strftime("%Y-%m-%d")] == "元宵节"
 
 
 def test_daily_open_remembers_a_holiday() -> None:
@@ -714,7 +746,8 @@ def test_metric_thresholds_reads_every_condition() -> None:
 def test_metric_thresholds_covers_the_packaged_definitions() -> None:
     # 随包发布的定义全都能解析，而且每个门槛都是正数
     thresholds = achievements.metric_thresholds()
-    assert "translate_hits" in thresholds
+    # 双语者（2026-10-16 改成看"读完的书有几种语言"）
+    assert thresholds["finished_languages"] == (2,)
     assert "help_opens" in thresholds
     assert "geo_continents" in thresholds
     for numbers in thresholds.values():
@@ -741,3 +774,178 @@ def test_session_metrics_degrades_to_an_empty_mapping(isolated_home, monkeypatch
 
     monkeypatch.setattr(achievements, "load_state", boom)
     assert achievements.session_metrics(document=make_document()) == {}
+
+
+# ------------------------------------------- 五颜六色：每本书挑过的自定义导读色
+# 四种颜色，用来当"攒够了"那一档
+_FOUR_COLORS = ["#ff0000", "#00ff00", "#0000ff", "#ffff00"]
+
+# 「五颜六色」的定义（测试不碰随包那份，理由同 achievement_defs）
+_COLORFUL_DEFS = [
+    {
+        "id": "colorful",
+        "name": "🌈 五颜六色",
+        "desc": "用四种自定义颜色的下划线 / 波浪线 / 光点读完一本书",
+        "condition": "colorful_books >= 1",
+        "category": "操作彩蛋",
+    }
+]
+
+
+def test_record_event_keeps_the_guide_colours_per_book() -> None:
+    state = achievements.empty_state()
+    # 一场会话挑过：大写 / 三位简写其实是同一种颜色，认不出的项（空串 / 中文 / 数字）丢掉
+    achievements.record_event(
+        state,
+        "session_end",
+        {"book_id": "b1", "seconds": 60, "colors": ["#FF0000", "#f00", "", "换颜色", 12]},
+    )
+    assert state["books"]["b1"]["colors"] == ["#ff0000"]
+    # 第二场又挑了一种：取并集（不是覆盖掉上一场那些）
+    achievements.record_event(
+        state, "session_end", {"book_id": "b1", "colors": ["#00ff00", "#ff0000"]}
+    )
+    assert state["books"]["b1"]["colors"] == ["#00ff00", "#ff0000"]
+    # 另一本书各记各的：颜色是**按书**攒的
+    achievements.record_event(state, "session_end", {"book_id": "b2", "colors": ["#0000ff"]})
+    assert state["books"]["b2"]["colors"] == ["#0000ff"]
+    # 没有书 id、没有颜色、颜色不是列表：一条都不记
+    achievements.record_event(state, "session_end", {"colors": ["#123456"]})
+    achievements.record_event(state, "session_end", {"book_id": "b1", "colors": []})
+    achievements.record_event(state, "session_end", {"book_id": "b1", "colors": "red"})
+    assert state["books"]["b1"]["colors"] == ["#00ff00", "#ff0000"]
+
+
+def test_progress_update_records_the_colours_too() -> None:
+    state = achievements.empty_state()
+    # 即时上报的位置也带着颜色：没有区间（字数额度不结算）时颜色照样记下来
+    achievements.record_event(state, "progress_update", {"book_id": "b1", "colors": ["#ff0000"]})
+    assert state["books"]["b1"]["colors"] == ["#ff0000"]
+
+
+def test_a_hand_edited_state_file_cannot_smuggle_bad_colours(isolated_home) -> None:
+    # 手改的状态文件：颜色栏里塞了各种东西（大写 / 三位简写 / 名字 / 数字 / 重复）
+    target = achievements.state_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "metrics": {},
+                "books": {
+                    "b1": {
+                        "words": 0,
+                        "counted": [],
+                        "colors": ["#FF0000", "#f00", "red", 12, "#00FF00"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    # 读回来只剩两种合法颜色（去重 + 收小写），坏项一个都不留
+    assert achievements.load_state()["books"]["b1"]["colors"] == ["#00ff00", "#ff0000"]
+
+
+def test_colorful_books_needs_both_halves(isolated_home) -> None:
+    state = achievements.empty_state()
+    # 三本书：b1 攒够四种、b2 攒够四种、b3 只有三种
+    achievements.record_event(state, "session_end", {"book_id": "b1", "colors": _FOUR_COLORS})
+    achievements.record_event(state, "session_end", {"book_id": "b2", "colors": _FOUR_COLORS})
+    achievements.record_event(
+        state, "session_end", {"book_id": "b3", "colors": _FOUR_COLORS[:3]}
+    )
+    document = make_document()
+    document["books"] = {
+        # b1：读完 + 四种 → 算
+        "b1": {"progress": {"sessions": [], "finished": True}},
+        # b2：颜色够了但没标读完 → 不算
+        "b2": {"progress": {"sessions": []}},
+        # b3：标了读完但颜色不够 → 不算
+        "b3": {"progress": {"sessions": [], "finished": True}},
+    }
+    metrics = achievements.compute_metrics(document, state)
+    assert metrics["colorful_books"] == 1
+    # 指标在空状态里也得在（条件才不至于读到不存在的键）
+    empty = achievements.compute_metrics(make_document(), achievements.empty_state())
+    assert empty["colorful_books"] == 0
+
+
+def test_colorful_counts_one_colour_per_field(isolated_home) -> None:
+    # 三个取色器各挑一种（三种），还没够四种：这本读完也不算
+    state = achievements.empty_state()
+    achievements.record_event(
+        state,
+        "session_end",
+        {"book_id": "b1", "colors": ["#ff0000", "#00ff00", "#0000ff"]},
+    )
+    document = make_document()
+    document["books"]["b1"]["progress"]["finished"] = True
+    assert achievements.compute_metrics(document, state)["colorful_books"] == 0
+    # 再挑第四种（把其中一枚换掉也算）就凑齐了
+    achievements.record_event(state, "session_end", {"book_id": "b1", "colors": ["#ffff00"]})
+    assert achievements.compute_metrics(document, state)["colorful_books"] == 1
+
+
+def test_colorful_unlocks_when_the_book_is_marked_read(isolated_home) -> None:
+    # 一场会话挑了四种色，但书还没标读完：不解锁
+    assert (
+        achievements.check_achievements(
+            "session_end",
+            {
+                "book_id": "b1",
+                "seconds": 600,
+                "started": "2026-03-01T20:00:00",
+                "ended": "2026-03-01T20:10:00",
+                "colors": _FOUR_COLORS,
+            },
+            definitions=_COLORFUL_DEFS,
+            document=make_document(),
+        )
+        == []
+    )
+    # 书架标成已读（serve 的 finish 就发 book_finish）→ 当场解锁
+    finished_document = make_document()
+    finished_document["books"]["b1"]["progress"]["finished"] = True
+    newly = achievements.check_achievements(
+        "book_finish",
+        {"book_id": "b1"},
+        definitions=_COLORFUL_DEFS,
+        document=finished_document,
+        now=datetime(2026, 3, 1, 21, 0),
+    )
+    assert [entry["id"] for entry in newly] == ["colorful"]
+    # 颜色也真的留在了状态里
+    assert achievements.load_state()["books"]["b1"]["colors"] == sorted(_FOUR_COLORS)
+    # 再标一次不会再给一枚（解锁幂等）
+    assert (
+        achievements.check_achievements(
+            "book_finish",
+            {"book_id": "b1"},
+            definitions=_COLORFUL_DEFS,
+            document=finished_document,
+        )
+        == []
+    )
+
+
+def test_merge_states_unites_the_colours_of_a_book() -> None:
+    left = achievements.empty_state()
+    left["books"]["b1"] = {"words": 0, "counted": [], "colors": ["#ff0000"]}
+    right = achievements.empty_state()
+    right["books"]["b1"] = {"words": 0, "counted": [], "colors": ["#00ff00", "#ff0000"]}
+    # 两边（两台机器）各挑过的颜色合起来：这本就用过两种
+    assert achievements.merge_states(left, right)["books"]["b1"]["colors"] == [
+        "#00ff00",
+        "#ff0000",
+    ]
+
+
+def test_colorful_definition_is_packaged() -> None:
+    # 随包的定义里真有这一条，条件引用的指标是 compute_metrics 会产出的那种
+    entry = next(item for item in stats.load_achievements() if item["id"] == "colorful")
+    assert entry["condition"] == "colorful_books >= 1"
+    assert entry["category"] == "操作彩蛋"
+    assert entry["secret"] is False
+    # 「四种」与内核那个常量对得上（改常量就得改文案，别悄悄漂走）
+    assert achievements.COLORFUL_COLORS == 4

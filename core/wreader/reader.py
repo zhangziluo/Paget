@@ -1279,11 +1279,13 @@ class Pager:
         self.arrow_keys = 0
 
     def note_width(self, width: int, now: Optional[float] = None) -> None:
-        """Account the time spent at terminal *width* (the 极限尺寸 stopwatch).
+        """Account the time spent at terminal *width* (the cramped-window stopwatch).
 
         Only a window no wider than :data:`achievements.NARROW_COLUMNS` runs the clock,
         and the time is booked when the width *changes* -- never per frame, so a slow
-        laptop does not spend its battery timing nothing.
+        laptop does not spend its battery timing nothing.  No achievement reads these
+        seconds right now; the accounting stays because the width itself feeds the
+        "窄屏挑战" chapter counter and the event payloads.
         """
         # 单调时钟：系统改时间也不会让秒数变成负数
         moment = time.monotonic() if now is None else float(now)
@@ -3054,7 +3056,7 @@ def _run(stdscr: Any, pager: Pager) -> None:
         pager.resume_marker = {}
     # 写上"我正在读这本书"的现场：正常退出会删掉它，崩溃时它会留下来
     write_marker(pager)
-    # 先量一次终端宽度：极限尺寸的秒表从这里开始走
+    # 先量一次终端宽度：窄窗的秒表从这里开始走
     pager.note_width(stdscr.getmaxyx()[1])
     # get_wch 最多等 1 秒：这样时钟和状态栏能持续刷新（自动翻页开着时会缩短）
     stdscr.timeout(_poll_timeout_ms(pager))
@@ -3261,7 +3263,7 @@ def open_reader(book_id: str) -> int:
 
     # -- 成就：先备好"实时判定"要用的门槛表与基线（各读一次盘）--------------
     _prepare_achievements(pager, document)
-    # 环境探测（云端书虫 / 穿越子系统 / 套娃终端 / 开发者模式）：纯读环境，不联网
+    # 环境探测（云端书虫 / 穿越子系统 / 套娃终端）：纯读环境，不联网
     _probe_achievements(pager, "env", {"flags": env.flags()})
     # 位置探测（地理成就）：一小时最多查一次外网，关掉 stats.geo_lookup 就完全离线
     _probe_geo(pager, settings)

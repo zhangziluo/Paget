@@ -48,6 +48,7 @@ from .lock import file_lock
 
 # 模块对外暴露的名字
 __all__ = [
+    "COLORFUL_COLORS",
     "COUNTER_METRICS",
     "EARLY_END_HOUR",
     "EARLY_START_HOUR",
@@ -111,6 +112,8 @@ EVENTS: Tuple[str, ...] = (
     "env",
     "name_egg",
     "achievements_view",
+    # Phase 4（界面里的「软件使用时间」）：单次非阅读使用 / 连续沉浸的峰值
+    "usage",
     # check = 只做一次判定（`werd achievements` 以前用它，现在改用更具体的
     # achievements_view；这个名字保留着，因为它是公开白名单，删掉会打断老脚本）
     "check",
@@ -121,9 +124,9 @@ EVENTS: Tuple[str, ...] = (
 COUNTER_METRICS: Tuple[str, ...] = (
     # 全程只用方向键读完的章节数（方向键怀旧）
     "arrow_chapters",
-    # 按过多少次翻译键（翻译狂魔）
+    # 按过多少次翻译键（阅读器仍在记，只是现在没有成就引用它）
     "translate_hits",
-    # 窄窗口（≤ NARROW_COLUMNS 列）里累计读了多少秒（极限尺寸）
+    # 窄窗口（≤ NARROW_COLUMNS 列）里累计读了多少秒（阅读器仍在记，见 NARROW_COLUMNS）
     "narrow_seconds",
     # 窄窗口（≤ NARROW_CHAPTER_COLUMNS 列）里读完了几章（窄屏挑战）
     "narrow_chapters",
@@ -131,21 +134,29 @@ COUNTER_METRICS: Tuple[str, ...] = (
     "help_opens",
 )
 
-# 阅读器上报的是**峰值**的指标（取 max，不累加）
-#: Metrics the reader reports as *maxima* (the longest run wins).
+# 上报的是**峰值**的指标（取 max，不累加）：阅读器与界面都用这一组
+#: Metrics reported as *maxima* (the longest run wins).
 MAX_METRICS: Tuple[str, ...] = (
     # 最长的空格连击（手速达人）
     "space_combo",
     # 最长的一次连续翻页（翻页永动机）
     "page_streak",
+    # 界面报来的「单次软件使用」峰值（我不看书）：沉浸连续一小时也算在内
+    "not_reading_session",
 )
 
-# 「极限尺寸」判定的列数上限：终端窄到这么多列才算"极限"
+# 窄窗口的列数上限：终端窄到这么多列就算"极限"（阅读器仍按它计窄窗秒数，
+# 只是从 2026-10-16 起没有成就再引用这段秒数）
 #: The terminal width (columns) below which a reading session is "cramped".
 NARROW_COLUMNS = 40
 # 「窄屏挑战」判定的列数上限：比 NARROW_COLUMNS 宽松一档
 #: The terminal width (columns) below which a chapter counts as read "narrow".
 NARROW_CHAPTER_COLUMNS = 60
+
+# 「五颜六色」要几种自定义导读色：光点 / 下划线 / 波浪线三枚取色器挑下来的颜色，
+# 同一本书读的时候攒够这么多种不同的（出厂色不算，空串也不算）就算数。
+#: How many *different* custom guide colours one finished book must have seen.
+COLORFUL_COLORS = 4
 
 # 状态文件 metrics 段里按**非负整数**存的指标（手改坏的值一律夹回 0）
 #: Metrics stored as non-negative ints in the state file.
@@ -162,6 +173,7 @@ _INT_METRICS: Tuple[str, ...] = (
     "crash_recovers",
     "recover_declined",
     "achievement_views",
+    "not_reading_session",
 )
 
 # 布尔型的指标：只关心"有没有发生过"，读回来一律夹成 0/1
@@ -206,6 +218,8 @@ HOLIDAYS: Dict[str, str] = {
 # 农历节日：公历日期每年不同，所以直接列官方公布的日期（2024-2030）。
 # ⚠️ 这张表刻意只到 2030：再往后得查天文台公布的历书，宁可让 2031 年之后
 # 退回 HOLIDAYS 里的公历节日，也不在这里编日期。
+# 元宵节是正月十五，也就是春节（正月初一）往后数 14 天，所以它直接从下面
+# 那七条春节日期加出来 —— 不另查一份历书，也就不会跟春节日期打架。
 #: Lunar festivals, whose Gregorian dates are listed explicitly for 2024-2030.
 LUNAR_HOLIDAYS: Dict[str, str] = {
     "2024-02-10": "春节",
@@ -215,6 +229,13 @@ LUNAR_HOLIDAYS: Dict[str, str] = {
     "2028-01-26": "春节",
     "2029-02-13": "春节",
     "2030-02-03": "春节",
+    "2024-02-24": "元宵节",
+    "2025-02-12": "元宵节",
+    "2026-03-03": "元宵节",
+    "2027-02-20": "元宵节",
+    "2028-02-09": "元宵节",
+    "2029-02-27": "元宵节",
+    "2030-02-17": "元宵节",
     "2024-09-17": "中秋节",
     "2025-10-06": "中秋节",
     "2026-09-25": "中秋节",
@@ -233,6 +254,10 @@ _WEEKEND_DAYS = (5, 6)
 
 # 拉丁单词：字母开头，允许撇号与连字符（I'm / well-known 都算一个词）
 _LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+
+# 导读的自定义色：界面存的就是 ``#rrggbb``（三位简写也认，读的时候补成六位）。
+# 大写一律收成小写 —— 否则 ``#FF0000`` 与 ``#ff0000`` 会被算成两种颜色。
+_COLOR_RE = re.compile(r"^#?([0-9a-f]{3}|[0-9a-f]{6})$")
 
 
 # 状态文件坏到无法使用时抛这个异常（调用方通常选择忽略）
@@ -270,7 +295,8 @@ def empty_state() -> Dict[str, Any]:
         # 状态派生的指标：打开过的日期、清晨是否打开过、周末时长、读了多少字、
         # 以及在阅读器里实时攒下的那些（连击、翻页、窄屏、地理、环境……）
         "metrics": empty_metrics(),
-        # 每本书读过的行区间与已统计字数：用来给字数统计去重
+        # 每本书读过的行区间、已统计字数，以及读过时挑过哪些自定义导读色：
+        # 前者给字数统计去重，后者是「五颜六色」的依据
         "books": {},
         # 每条成就的进度快照（`werd achievements` 直接读它）
         "progress": {},
@@ -294,6 +320,27 @@ def _string_list(value: Any) -> List[str]:
         return []
     # 只保留能安全转成字符串的项
     return [str(item) for item in value if isinstance(item, (str, int))]
+
+
+def _mark_color(value: Any) -> str:
+    """Return *value* as a lowercase ``#rrggbb``, or ``""`` when it is not a colour."""
+    # 前后空白与大小写都无所谓；认不出的（空串、名字、乱写）一律回空
+    match = _COLOR_RE.match(str(value or "").strip().lower())
+    if not match:
+        return ""
+    digits = match.group(1)
+    # 三位简写补成六位（``#f80`` 与 ``#ff8800`` 是同一种颜色）
+    if len(digits) == 3:
+        digits = "".join(char * 2 for char in digits)
+    return "#" + digits
+
+
+def _mark_colors(value: Any) -> List[str]:
+    """Return the colours in *value*, normalised and with the junk dropped."""
+    # 不是列表（状态文件被改坏）就当没挑过颜色
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [color for color in (_mark_color(item) for item in value) if color]
 
 
 def _int_map(value: Any) -> Dict[str, int]:
@@ -376,6 +423,8 @@ def _normalise_state(raw: Any) -> Dict[str, Any]:
                 "words": max(0, _as_int(record.get("words"))),
                 # 区间统一成 list[list[int]]：内存里的形状与写盘后的 JSON 完全一致
                 "counted": [[start, end] for start, end in merge_ranges(_ranges(record.get("counted")))],
+                # 这本书读过时挑过的自定义导读色：去重排序，认不出的项丢掉
+                "colors": sorted(set(_mark_colors(record.get("colors")))),
             }
     state["books"] = normalised
     # 进度快照：{"id": {"current": n, "required": m}}
@@ -668,6 +717,11 @@ def merge_states(base: Any, incoming: Any) -> Dict[str, Any]:
             "words": max(int(first["words"]), int(second["words"])),
             # 统一成 list[list[int]]：内存里的形状与写盘后的 JSON 一致
             "counted": [[start, end] for start, end in counted],
+            # 挑过的颜色取并集（两台机器各自挑过几种，合起来就是这本用过的）
+            "colors": sorted(
+                set(_string_list(first.get("colors")))
+                | set(_string_list(second.get("colors")))
+            ),
         }
     merged["books"] = books
     # 全局字数指标要跟着各书的字数和走（正常情况下两者本就相等）；
@@ -727,6 +781,59 @@ def _record_daily_open(state: Dict[str, Any], moment: datetime) -> None:
         _add_unique(state, "holidays", [day])
 
 
+def _book_record(state: Dict[str, Any], book_id: str) -> Dict[str, Any]:
+    """Return the per-book record of *state*, creating an empty one when missing."""
+    # 每本书一份：{words, counted, colors}（老状态文件里可能只有前两个键）
+    books = state.setdefault("books", {})
+    record = books.get(book_id)
+    if not isinstance(record, dict):
+        record = {"words": 0, "counted": [], "colors": []}
+    books[book_id] = record
+    return record
+
+
+def _record_colors(state: Dict[str, Any], payload: Mapping[str, Any]) -> None:
+    """Remember which custom guide colours this book was read with.
+
+    The reader reports the colours it saw picked for the three guide marks
+    (光点 / 下划线 / 波浪线) during the session; an empty string means "the colour
+    that ships", so only colours the user actually chose arrive here.  The set is
+    kept **per book** because 「五颜六色」 asks for four of them *in one finished
+    book* -- reading four books with one colour each is a different story.
+    """
+    book_id = str(payload.get("book_id") or "")
+    colors = _mark_colors(payload.get("colors"))
+    # 没有书 id（或这次一个自定义色都没有）：没什么可记的
+    if not book_id or not colors:
+        return
+    record = _book_record(state, book_id)
+    # 与已经记下的取并集：同一本书几场读下来攒的颜色都留着
+    known = set(_string_list(record.get("colors")))
+    known.update(colors)
+    record["colors"] = sorted(known)
+
+
+def _record_usage_session(state: Dict[str, Any], payload: Mapping[str, Any]) -> None:
+    """Keep the longest single non-reading use reported by the GUI.
+
+    「我不看书」 asks for **one** continuous stretch of at least an hour, not a
+    running total: the GUI reports the longer of (this app run's non-reading time)
+    and (the current immersive-mode run), and this function keeps only the
+    maximum.  Reporting every few minutes therefore updates the progress without
+    ever turning the value into an accumulated sum.
+    """
+    # 本次上报的单次峰值（秒）；负数 / 坏值按 0
+    seconds = max(0, _as_int(payload.get("seconds")))
+    # 没有正数就没什么可记的
+    if not seconds:
+        return
+    metrics = _metrics(state)
+    # 峰值只取大：一次 20 分钟、一次 50 分钟，记的是 50 分钟而不是 70 分钟
+    metrics["not_reading_session"] = max(
+        _as_int(metrics.get("not_reading_session")), seconds
+    )
+
+
 def _record_session_end(state: Dict[str, Any], payload: Mapping[str, Any]) -> None:
     """Fold one reading session's duration and words into the state."""
     # 本次会话时长（秒）
@@ -740,6 +847,8 @@ def _record_session_end(state: Dict[str, Any], payload: Mapping[str, Any]) -> No
     _record_counters(state, payload)
     # 会话里带了正文与读过的行区间：顺便结算本次的字数
     _record_progress(state, payload)
+    # 本次挑过哪些自定义导读色（「五颜六色」按书攒）——与字数无关，单独记
+    _record_colors(state, payload)
 
 
 def _record_progress(state: Dict[str, Any], payload: Mapping[str, Any]) -> None:
@@ -756,11 +865,7 @@ def _record_progress(state: Dict[str, Any], payload: Mapping[str, Any]) -> None:
     if not book_id or not isinstance(lines, (list, tuple)) or not ranges:
         return
     # 这本书的累计记录
-    books = state.setdefault("books", {})
-    record = books.get(book_id)
-    if not isinstance(record, dict):
-        record = {"words": 0, "counted": []}
-    books[book_id] = record
+    record = _book_record(state, book_id)
     # 逐段结算：只有没统计过的行才算数
     counted = _ranges(record.get("counted"))
     gained = 0
@@ -933,6 +1038,8 @@ def record_event(
         _record_session_end(state, payload)
     elif event_type == "progress_update":
         _record_progress(state, payload)
+        # 即时上报的位置也可能带着这次挑的颜色（没有区间时字数不结算，颜色照记）
+        _record_colors(state, payload)
     elif event_type in ("key", "resize"):
         # 阅读器里的实时上报：增量 + 峰值两种形状
         _record_counters(state, payload)
@@ -948,8 +1055,40 @@ def record_event(
         _record_egg(state, payload)
     elif event_type == "achievements_view":
         _bump(state, "achievement_views")
+    elif event_type == "usage":
+        _record_usage_session(state, payload)
     # book_add / book_finish / word_add / note_add / check 只需要计数
     return state
+
+
+def _colorful_books(document: Mapping[str, Any], state: Mapping[str, Any]) -> int:
+    """How many finished books were read with enough custom guide colours.
+
+    Two halves have to meet here: the colours live in the state (the reader
+    reports them session by session, see :func:`_record_colors`) while 「读完」
+    lives in the library index (``progress.finished``).  A book counts only when
+    **both** hold -- which is exactly what the 「五颜六色」 condition asks for, and
+    the reason this is a metric of its own: a condition is a single
+    ``metric OP number`` expression and cannot say "and" on its own.
+    """
+    # 书库那一侧：只看标了读完的书
+    books = document.get("books") if isinstance(document, Mapping) else None
+    books = books if isinstance(books, Mapping) else {}
+    # 状态那一侧：每本书记下的自定义导读色
+    logged = state.get("books") if isinstance(state, Mapping) else None
+    logged = logged if isinstance(logged, Mapping) else {}
+    total = 0
+    for book_id, record in logged.items():
+        # 这本书在索引里标了读完吗（没标 / 认不出结构都算没读完）
+        book = books.get(str(book_id))
+        progress = book.get("progress") if isinstance(book, Mapping) else None
+        if not isinstance(progress, Mapping) or not progress.get("finished"):
+            continue
+        # 读过它的时候挑过够多种不同的自定义色吗
+        record = record if isinstance(record, Mapping) else {}
+        if len(set(_string_list(record.get("colors")))) >= COLORFUL_COLORS:
+            total += 1
+    return total
 
 
 def compute_metrics(
@@ -972,6 +1111,8 @@ def compute_metrics(
     log = log if isinstance(log, Mapping) else {}
     # 书库里一共有几本（藏书家 / 移动图书馆）
     metrics["library_books"] = len((document or {}).get("books") or {})
+    # 用 ≥ COLORFUL_COLORS 种自定义导读色读完的书（五颜六色）：颜色按书记在状态里
+    metrics["colorful_books"] = _colorful_books(document, state)
     # 累计读了多少字（万字户 … 十亿富豪）
     metrics["words_read"] = max(0, _as_int(log.get("words_read")))
     # 打开过 werd 的天数（百日筑基）
@@ -1000,6 +1141,8 @@ def compute_metrics(
     metrics["recover_declined"] = _as_int(log.get("recover_declined"))
     # 翻开成就页的次数（成就猎人）
     metrics["achievement_views"] = _as_int(log.get("achievement_views"))
+    # 界面报来的单次软件使用峰值（我不看书）：满一小时才算，累计不算
+    metrics["not_reading_session"] = _as_int(log.get("not_reading_session"))
     # -- Phase 3：地理 / 环境 / 节日 / 彩蛋 ---------------------------------
     # 节日读书的天数（节日读者）
     metrics["holiday_opens"] = len(_string_list(log.get("holidays")))
@@ -1009,7 +1152,7 @@ def compute_metrics(
     metrics["geo_feud"] = 1 if _string_list(log.get("feuds")) else 0
     # 触发过的彩蛋个数
     metrics["easter_eggs"] = len(_string_list(log.get("eggs")))
-    # 环境信号：每个名字一个 0/1 指标（云端书虫/穿越子系统/套娃终端/开发者模式）
+    # 环境信号：每个名字一个 0/1 指标（云端书虫 / 穿越子系统 / 套娃终端都写在这上面）
     flags = set(_string_list(log.get("envs")))
     for name in env.SIGNAL_NAMES:
         metrics["env_{}".format(name)] = 1 if name in flags else 0

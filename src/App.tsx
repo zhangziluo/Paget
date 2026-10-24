@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 
 import "./App.css";
-import { cachedShelf, coreVersion, resetCache, syncShelf } from "./lib/core";
+import { useAmbient } from "./lib/ambient";
+import { cachedShelf, coreVersion, recordEvent, resetCache, syncShelf } from "./lib/core";
 import { coreStamp } from "./lib/format";
 import { isTypingTarget, pageKeyAction, type ShortcutId } from "./lib/shortcuts";
 import type { BookRow } from "./lib/types";
+import { useUsageTracker } from "./lib/usage";
 import Achievements from "./views/Achievements";
 import Desk, { type Tab as DeskTab } from "./views/Desk";
 import Reader from "./views/Reader";
@@ -49,6 +51,20 @@ export default function App() {
   // 书房那把小锤子在不在手上：由书房报上来（`Shelf` 的 `onManageChange`）—— 它一被挂件页
   // 顶掉就会重新挂载，所以这份状态得留在这里；去统计页看一眼再回来，手里还拿着锤子。
   const [managing, setManaging] = useState(false);
+  // 沉浸模式：只能整理书架 —— 书、统计 / 成就 / 设置三枚贴纸、导入与右上角那些小圆钮全部停用。
+  // 开关是墙上那枚「沉浸」贴纸（`Shelf` 报上来）。**只活在这一次运行里**：重启应用就回到
+  // 正常模式，不会让人第二天打开时被一个记着的「沉浸」关在门外。
+  const [immersive, setImmersive] = useState(false);
+  // 白噪音：挂在**这一层**（不在书房里）—— 去统计页、去阅读页时书房卸掉了，声音还得在。
+  // 书房那台留声机与设置页里的同一个开关都调它的 `toggle`（见 `lib/ambient.ts`）。
+  const ambient = useAmbient();
+  // 软件使用时间：只算读书以外的停留（书房 / 日记 / 勋章 / 设置），翻开书就停表。
+  // 计时在模块里走（见 `lib/usage.ts`），这里不接 state —— 每秒走秒不该重渲染整个书架。
+  // 同一个计时器还会把「单次使用峰值」报给内核，用来解锁「🙈 我不看书」。
+  const reportUsage = useCallback(async (seconds: number) => {
+    await recordEvent("usage", { seconds });
+  }, []);
+  useUsageTracker(open !== null, immersive, reportUsage);
 
   /**
    * Pull the shelf from the core and refresh the cache.
@@ -185,6 +201,7 @@ export default function App() {
           onLibraryChanged={() => void refresh()}
           tab={deskTab}
           onTab={setDeskTab}
+          ambient={ambient}
         />
       </div>
     );
@@ -197,14 +214,27 @@ export default function App() {
         books={books}
         busy={busy}
         error={error}
-        onOpen={setOpen}
+        // 沉浸模式的两道门都关在 App 这一层（书房里也各自挡了一道，见 `Shelf`）：
+        // 开书、开统计 / 成就 / 设置都不再有效
+        onOpen={(book) => {
+          if (!immersive) setOpen(book);
+        }}
         onSync={() => refresh()}
         onReset={() => void clearCache()}
-        onOpenStats={() => setOverlay("stats")}
-        onOpenAchievements={() => setOverlay("achievements")}
-        onOpenDesk={() => setOverlay("desk")}
+        onOpenStats={() => {
+          if (!immersive) setOverlay("stats");
+        }}
+        onOpenAchievements={() => {
+          if (!immersive) setOverlay("achievements");
+        }}
+        onOpenDesk={() => {
+          if (!immersive) setOverlay("desk");
+        }}
+        immersive={immersive}
+        onToggleImmersive={() => setImmersive((on) => !on)}
         initialManaging={managing}
         onManageChange={setManaging}
+        ambient={ambient}
       />
     </div>
   );

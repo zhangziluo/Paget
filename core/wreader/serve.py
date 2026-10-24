@@ -331,7 +331,10 @@ def _handle_session(params: Dict[str, Any]) -> Dict[str, Any]:
     session; the achievements engine dedupes them, so a re-read adds no words.
     A GUI that only knows its own coordinate system (an epub CFI) can still pass
     the line ranges it *approximately* covered -- the time and the position are
-    the parts that must be exact.
+    the parts that must be exact.  ``guide_colors`` is the custom colours the
+    reader saw picked for the guide marks (光点 / 下划线 / 波浪线) during this
+    session; the engine keeps them per book for the 「五颜六色」 achievement, so a
+    client that has no such setting simply leaves it out.
     """
     # 先确认书还在
     book = _require_book(params)
@@ -387,6 +390,8 @@ def _session_unlocked(
             # 阅读器攒下的按键 / 尺寸计数：GUI 没有这些，缺省就是空
             "deltas": params.get("deltas") or {},
             "maxima": params.get("maxima") or {},
+            # 这一场里挑过的自定义导读色（五颜六色按书攒；终端阅读器没有这项，缺省为空）
+            "colors": params.get("guide_colors") or [],
             "width": int(params.get("width") or 0),
             "height": int(params.get("height") or 0),
         }
@@ -578,6 +583,12 @@ def _handle_finish(params: Dict[str, Any]) -> Dict[str, Any]:
 
     Only ``progress.finished`` changes; the position and the reading time stay as
     they are, so this can never lose progress.  ``finished`` defaults to ``True``.
+
+    Marking a book read *is* finishing a book, so it also fires ``book_finish`` --
+    the same event the terminal reader's own bookkeeping produces -- which is what
+    lets 「🏁 第一本」 and 「🌈 五颜六色」 unlock right here instead of waiting for the
+    next session or the next launch.  Marking it *unread* fires nothing (there is
+    no "unfinished a book" event, and unlocks are never taken back anyway).
     """
     # 没给 id 就不知道标记哪一本
     book_id = _text_param(params, "book_id")
@@ -588,8 +599,10 @@ def _handle_finish(params: Dict[str, Any]) -> Dict[str, Any]:
     # 落库；未知 id 会拿到 None
     if library.set_finished(book_id, finished) is None:
         raise ServeError("unknown book id: {}".format(book_id))
-    # 回显最终状态，界面据此换图标
-    return {"book_id": book_id, "finished": finished}
+    # 标成已读就记一个 book_finish（成就系统坏了也只是少一条，不影响"已标记"本身）
+    unlocked = _safe_event("book_finish", {"book_id": book_id}) if finished else []
+    # 回显最终状态（外加这次新解锁的成就），界面据此换图标
+    return {"book_id": book_id, "finished": finished, "unlocked": unlocked}
 
 
 @_method("set_meta")

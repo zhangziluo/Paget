@@ -1,5 +1,6 @@
 /*
- * 便利贴式功能入口（`components/StickyNoteNav.tsx`）：墙上那一栏里那三枚贴纸。
+ * 便利贴式功能入口（`components/StickyNoteNav.tsx`）：墙上那一栏里那四枚贴纸
+ * （统计 / 成就 / 设置 / 沉浸）。
  *
  * 与书房其余几节同一套做法：**纯 CSS** 塑形（和纸纹理是几层渐变叠出来的，不用图片、
  * 不引 web font —— 离线应用，一个纹理资产也不想多），位置 / 角度 / 时长走自定义属性，
@@ -14,7 +15,7 @@
  * 所以这里的状态规则都往上加一级（见 `.is-dragging:not(:disabled)` 那几条）。
  */
 
-/* 三枚贴纸站成一小排（墙上那一栏的第一个位置） */
+/* 四枚贴纸站成一小排（墙上那一栏的第一个位置） */
 .sticky-notes {
   display: flex;
   align-items: flex-start;
@@ -53,6 +54,59 @@
 .sticky-notes .sticky-note:active:not(:disabled) {
   transform: translate(var(--note-dx, 0px), var(--note-dy, 0px)) rotate(var(--note-tilt, 0deg))
     scale(0.98);
+}
+
+/*
+ * 沉浸模式开着：那枚「沉浸」贴纸点亮 —— 纸边一圈暖色、右上角多一颗图钉似的红点。
+ * 别的三枚则由 `disabled` 灰掉（见下面的 `.is-disabled`），一眼能看出「现在只有这一枚是活的」。
+ */
+.sticky-notes .sticky-note.is-active .sticky-note-face {
+  box-shadow: 0 0 0 0.11rem rgba(120, 72, 24, 0.7), 0 6px 13px rgba(20, 10, 0, 0.26);
+}
+
+/* hover 那条通用规则权重更高，会把上面这圈暖边盖掉 —— 这里再压一道 */
+.sticky-notes .sticky-note.is-active:hover .sticky-note-face {
+  box-shadow: 0 0 0 0.11rem rgba(120, 72, 24, 0.78), 0 6px 15px rgba(20, 10, 0, 0.3);
+}
+
+.sticky-notes .sticky-note.is-active::after {
+  content: "";
+  position: absolute;
+  top: -0.16rem;
+  right: -0.16rem;
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 50%;
+  background: #8f2c1b;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8), 0 1px 2px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* 沉浸模式下被灰掉的三枚：纸色退一点、指针是「不能点」，并且不再有 hover 的下压动作 */
+.sticky-notes .sticky-note.is-disabled {
+  cursor: not-allowed;
+}
+
+.sticky-notes .sticky-note.is-disabled:hover {
+  transform: translate(var(--note-dx, 0px), var(--note-dy, 0px)) rotate(var(--note-tilt, 0deg));
+}
+
+/* 用 `.front` / `.back` 再加一级：22:00 之后那条 `is-late` 的 filter 在文件后面，
+   同级权重会盖掉这一条 —— 灰掉的三枚得一直是灰的 */
+.sticky-notes .sticky-note.is-disabled .sticky-note-face.front,
+.sticky-notes .sticky-note.is-disabled .sticky-note-face.back {
+  filter: saturate(0.45) brightness(0.94);
+}
+
+.sticky-notes .sticky-note.is-disabled:hover .sticky-note-face {
+  /* 别把它们「提起来」：这一下按不动任何东西 */
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+.sticky-notes .sticky-note.is-disabled:hover .sticky-note-curl {
+  width: 0.62rem;
+  height: 0.19rem;
 }
 
 /* 拖动中：跟着指针走，别再有过渡（不然会"追"不上指针） */
@@ -101,10 +155,10 @@
 }
 
 /*
- * 三种纸色：米黄 / 淡粉 / 淡绿（`--note-hi` 是近白的那一头，`--note-lo` 是纸的底色）。
+ * 四种纸色：米黄 / 淡粉 / 淡绿 / 淡蓝（`--note-hi` 是近白的那一头，`--note-lo` 是纸的底色）。
  *
  * `--note-ink` 是字色：2026-10-07 三档一起压深（原来 #4a3a1c / #5b3540 / #39492b 落在
- * 纸色上偏灰），现在三档相对各自纸色的对比度都在 **10:1 以上**（WCAG AAA 要的是 7:1）——
+ * 纸色上偏灰），现在四档相对各自纸色的对比度都在 **10:1 以上**（WCAG AAA 要的是 7:1）——
  * 小纸片也要一眼读得清。
  */
 .sticky-notes .sticky-note.butter {
@@ -123,6 +177,13 @@
   --note-hi: #edf7e6;
   --note-lo: #cee5c3;
   --note-ink: #24311a;
+}
+
+/* 第四色「淡蓝」：四枚贴纸正好四色各一枚（具体哪一枚分到哪一色由 id 列表的哈希定） */
+.sticky-notes .sticky-note.sky {
+  --note-hi: #eaf4fb;
+  --note-lo: #c9e0ef;
+  --note-ink: #123042;
 }
 
 /*

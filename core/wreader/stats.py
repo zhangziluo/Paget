@@ -34,7 +34,7 @@ from datetime import date, datetime, timedelta
 # 允许测试传入自定义的成就文件路径
 from pathlib import Path
 # 类型注解：TextIO 表示"可写文本流"
-from typing import Any, Dict, List, Optional, Sequence, TextIO, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, TextIO, Tuple
 
 # 同包引用：配置（读每日目标 + 数据目录）、书库（读写索引）
 from . import config, library
@@ -545,7 +545,10 @@ def compute_metrics(
     counts books left at the last line, ``night_time`` and ``single_session`` are
     derived from the session timestamps, and the rest come straight out of
     ``stats``.  ``vocab_count`` and ``translations`` stay in the mapping because
-    the achievement conditions reference them.
+    the achievement conditions reference them; ``finished_languages`` counts how
+    many *different* languages the finished books are written in (at most one per
+    book, see :func:`library.book_language`), which is what the 双语者 badge is
+    written against.
     """
     # 防御性取值：文档结构不对也不炸
     books = document.get("books") if isinstance(document, dict) else None
@@ -559,6 +562,8 @@ def compute_metrics(
     finished = 0
     night_time = 0
     longest_session = 0
+    # 读完的书各是哪种语言（同一本只贡献一种；认不出的不算）
+    finished_languages: Set[str] = set()
     for book in (books or {}).values():
         if not isinstance(book, dict):
             continue
@@ -572,6 +577,10 @@ def compute_metrics(
         # 标记为读完的
         if progress.get("finished"):
             finished += 1
+            # 语言按正文的文字体系判断（读不到正文就是"认不出"，不计入）
+            language = library.book_language(book)
+            if language:
+                finished_languages.add(language)
         # 逐条会话：累计夜间时长、记录最长一次会话
         for session in sessions:
             if not isinstance(session, dict):
@@ -590,6 +599,7 @@ def compute_metrics(
         "night_time": int(night_time),
         "streak": streak_days(daily),
         "finished": finished,
+        "finished_languages": len(finished_languages),
         "vocab_count": int(vocab_size),
         "translations": int(stats.get("translations") or 0),
         "single_session": int(longest_session),

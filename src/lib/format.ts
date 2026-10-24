@@ -18,6 +18,7 @@ const TIME_METRICS = new Set([
   "night_time",
   "single_session",
   "weekend_time",
+  "not_reading_session",
 ]);
 
 /** The heatmap characters the core emits, coldest to brightest. */
