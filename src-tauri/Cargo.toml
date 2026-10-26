@@ -59,6 +59,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSPanel",
     "NSWindow",
 ] }
+# 「导出笔记本」那条命令要拿一个 NSString 填进 NSSavePanel 的文件名框。
+# 它本来就在依赖树里（objc2-app-kit 自己用），显式声明才能直接调用 `NSString::from_str`。
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
 
 [dev-dependencies]
 # 集成测试要自己开一个 tokio 运行时（sqlx 的 runtime-tokio 特性需要）

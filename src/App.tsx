@@ -9,6 +9,7 @@ import type { BookRow } from "./lib/types";
 import { useUsageTracker } from "./lib/usage";
 import Achievements from "./views/Achievements";
 import Desk, { type Tab as DeskTab } from "./views/Desk";
+import Notebook from "./views/Notebook";
 import Reader from "./views/Reader";
 import Shelf from "./views/Shelf";
 import Stats from "./views/Stats";
@@ -22,7 +23,7 @@ import Stats from "./views/Stats";
  * with its own back button in the top-right corner.  Every page still talks to the
  * same Python core through `src/lib/core.ts`, so no number is recomputed here.
  */
-type Overlay = "stats" | "achievements" | "desk";
+type Overlay = "stats" | "achievements" | "desk" | "notebook";
 
 /**
  * 挂件页与快捷键的对应：按 `S` 开统计、`A` 开成就、`G` 开设置（齿轮那一页，默认就是「设置」标签）。
@@ -206,6 +207,14 @@ export default function App() {
       </div>
     );
   }
+  // 笔记本：书架上那本摊着的册子 —— 所有书的划线 + 批注，按书分组
+  if (overlay === "notebook") {
+    return (
+      <div className="shell">
+        <Notebook onBack={closeOverlay} />
+      </div>
+    );
+  }
 
   // 书房：书脊 + 日历 / 徽章盒 / 齿轮 + 数字时钟
   return (
@@ -229,6 +238,9 @@ export default function App() {
         }}
         onOpenDesk={() => {
           if (!immersive) setOverlay("desk");
+        }}
+        onOpenNotebook={() => {
+          if (!immersive) setOverlay("notebook");
         }}
         immersive={immersive}
         onToggleImmersive={() => setImmersive((on) => !on)}

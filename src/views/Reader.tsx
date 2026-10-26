@@ -5,9 +5,29 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type CSSProperties,
 } from "react";
 
+import {
+  ANNOTATION_COLORS,
+  ANNOTATION_STYLES,
+  DEFAULT_ANNOTATION_COLOR,
+  annotationTint,
+  lineSegments,
+  loadAnnotations,
+  marksByLine,
+  newAnnotationId,
+  normalizeAnnotationColor,
+  patchAnnotation,
+  removeAnnotation,
+  saveAnnotations,
+  upsertAnnotation,
+  type Annotation,
+  type AnnotationSpan,
+  type AnnotationStyle,
+  type LineMark,
+} from "../lib/annotations";
 import {
   bookRecord,
   bookText,
@@ -15,12 +35,14 @@ import {
   getGuiSetting,
   indexBook,
   loadGuiPosition,
+  readerBackground,
   recordDailyOpen,
   recordSession,
   saveCorePosition,
   saveGuiPosition,
   searchBook,
   setGuiSetting,
+  setReaderBackground,
 } from "../lib/core";
 import PdfReader from "../components/PdfReader";
 import AutoCheckDialog from "../components/AutoCheckDialog";
@@ -50,6 +72,7 @@ import {
   PARA_MAX,
   PARA_MIN,
   PARA_STEP,
+  READER_BG_FILLS,
   READER_FONTS,
   READER_THEMES,
   WEIGHT_MAX,
@@ -57,6 +80,7 @@ import {
   WEIGHT_STEP,
   guideColorVars,
   guideSwatchColor,
+  hexToRgba,
   loadReaderPrefs,
   normalizeReaderPrefs,
   readerFontStack,
@@ -64,6 +88,18 @@ import {
   saveReaderPrefs,
   type ReaderPrefs,
 } from "../lib/readerPrefs";
+import {
+  DEFAULT_READER_TAP_ZONES,
+  READER_TAP_ACTIONS,
+  READER_TAP_ZONES,
+  isDefaultReaderTapZones,
+  loadReaderTapZones,
+  normalizeReaderTapZones,
+  saveReaderTapZones,
+  type ReaderTapAction,
+  type ReaderTapZone,
+  type ReaderTapZones,
+} from "../lib/readerTapZones";
 import {
   GUIDE_CHIP_MS,
   GUIDE_CRAWLER_EM,
@@ -119,15 +155,17 @@ const GUIDE_KEY_PRESETS = [1, 5, 9, 12, 16, 20];
 /** 拖滑杆换档会连发：进度等手停下来再写一次（毫秒），与排版偏好同一个数。 */
 const GUIDE_SAVE_MS = 400;
 
-/** 栏里那四块浮层：Aa（字与页边距）、纸色（纸面配色）、档位（光点导读的速度）、
- *  翻页设置（内核 `reader.*` 那一节的翻页与存档）。同一时刻只开一块。 */
-type Panel = "type" | "theme" | "guide" | "config" | null;
+/** 栏里那五块浮层：Aa（字与页边距）、纸色（纸面配色）、档位（光点导读的速度）、
+ *  翻页设置（内核 `reader.*` 那一节的翻页与存档）、手势（六个角落 / 边条点下去做什么）。
+ *  同一时刻只开一块。 */
+type Panel = "type" | "theme" | "guide" | "config" | "tap" | null;
 
 /** 屏幕中间多大一块算「中间区域」——点它呼出 / 收起上下两栏（比例，0~1）。 */
 const MIDDLE_BAND = { xMin: 0.25, xMax: 0.75, yMin: 0.18, yMax: 0.82 };
 
 /**
- * 四角热区有多大（比例，0~1）：左上「书架略缩图」、右上「书签」、左下「目录」、右下「玩偶」。
+ * 四角热区有多大（比例，0~1）。四角各做什么读「手势」那张表（`lib/readerTapZones.ts`）：
+ * 出厂是左上「书架略缩图」、右上「书签」、左下「目录」、右下「玩偶」。
  *
  * 中间那块（`MIDDLE_BAND`）照旧呼出上下两栏；四角与它**不重叠**，所以两套交互各管各的。
  */
@@ -141,6 +179,18 @@ const CORNER_HIT = 0.22;
  */
 const EDGE_HIT = 0.18;
 
+/**
+ * 左上角「悬停浮出小书架」的触发范围与等待时间。
+ *
+ * 触发范围**比 `CORNER_HIT` 更窄**（0.14 而不是 0.22）：原来的 22% 太靠近第一行正文，
+ * 鼠标只是去选字就会「啪」地弹出一块木头压在字上，划线与批注都被它挡了。
+ * 现在还要求**停够 `PEEK_DELAY_MS`** 才浮出来 —— 快速划过、拖动选区都不会触发；
+ * 一旦按了鼠标（`onMouseDown`）也立刻收起来。于是「略缩图压着正文」只可能发生在
+ * 你确实把光标停在最角落的时候。
+ */
+const PEEK_HIT = 0.14;
+const PEEK_DELAY_MS = 420;
+
 /** 左上角小书架里那几根书脊：颜色与高矮都岔开一点，像一排放满的书 */
 const PEEK_SPINES = [
   { color: "#a3452f", height: 82 },
@@ -151,6 +201,189 @@ const PEEK_SPINES = [
   { color: "#7a5a2e", height: 92 },
   { color: "#b05a4a", height: 66 },
 ];
+
+/**
+ * 自定义背景图长边的上限（px）：纸面用不着更大，压住文件体积。
+ *
+ * 以前存进偏好 JSON 时是 2400px / q0.9 —— 一张照片动辄 4~5 MB，而每拖一下字号
+ * 滑杆都要把它重写一遍。现在图单独落文件，并且压到 2000px / q0.82：
+ * 铺在纸上还要淡化，肉眼看不出差别，文件通常只有几百 KB。
+ */
+const BG_MAX_EDGE = 2000;
+
+/** 旧偏好里的背景图超过这个长度才值得重新压一遍（小图直接搬进文件，不降质）。 */
+const BG_RECOMPRESS_ABOVE = 512 * 1024;
+
+/** 把已经解码的图片画进 canvas，压成长边 ≤ `BG_MAX_EDGE` 的 webp data URL。 */
+function encodeBackgroundImage(image: HTMLImageElement): string {
+  const natural = Math.max(image.naturalWidth, image.naturalHeight);
+  if (!natural) throw new Error("image has no pixels");
+  const scale = Math.min(1, BG_MAX_EDGE / natural);
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("canvas unavailable");
+  context.drawImage(image, 0, 0, width, height);
+  // webp 保留透明（带透明的 png 不会变黑底）；不认 webp 的 webview 会自己退回 png
+  return canvas.toDataURL("image/webp", 0.82);
+}
+
+/**
+ * 把用户挑的图片读成一张压缩过的 data URL（长边 ≤ `BG_MAX_EDGE`，webp）。
+ *
+ * 为什么要先过一遍 canvas：直接 `readAsDataURL` 一张 4K 照片会得到好几 MB 的 base64，
+ * 而这张图要写进磁盘、每次开书再读回来 —— 压过之后通常只剩几百 KB。
+ */
+function readBackgroundImage(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      try {
+        resolve(encodeBackgroundImage(image));
+      } catch (err) {
+        reject(err);
+      }
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("image decode failed"));
+    };
+    image.src = url;
+  });
+}
+
+/**
+ * 把一张已经存在的 data URL 重新压一遍（只给老数据用）。
+ *
+ * 老版本把图塞在 `gui_settings.reader.prefs` 里、压到 2400px；迁移到文件时顺手
+ * 瘦一圈。解不开就原样返回 —— 迁移失败也不能把用户的背景图弄丢。
+ */
+function shrinkBackgroundImage(dataUrl: string): Promise<string> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      try {
+        resolve(encodeBackgroundImage(image));
+      } catch {
+        resolve(dataUrl);
+      }
+    };
+    image.onerror = () => resolve(dataUrl);
+    image.src = dataUrl;
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* 划线：把 DOM 选区换算成「行号 + 行内字符区间」                          */
+/* ------------------------------------------------------------------ */
+
+/** 浮条 / 批注卡片离屏幕边至少留这么多像素。 */
+const ANNOT_EDGE_PX = 12;
+
+/** 一个点（node, offset）在某一行里已经走过的字符数。 */
+function offsetInLine(lineEl: HTMLElement, node: Node, offset: number): number {
+  const box = lineEl.querySelector<HTMLElement>(".reading-line-text") ?? lineEl;
+  if (node !== box && !box.contains(node)) return 0;
+  const probe = document.createRange();
+  probe.selectNodeContents(box);
+  try {
+    probe.setEnd(node, offset);
+  } catch {
+    return 0;
+  }
+  return probe.toString().length;
+}
+
+/** 这个节点属于哪一行（`.reading-line[data-line]`）。 */
+function lineElementOf(node: Node | null): HTMLElement | null {
+  const element = node instanceof Element ? node : (node?.parentElement ?? null);
+  return element?.closest<HTMLElement>(".reading-line[data-line]") ?? null;
+}
+
+/** 一行显示出来的文字（划线就是按它算字符偏移的）。 */
+function lineTextOf(lineEl: HTMLElement): string {
+  return lineEl.querySelector<HTMLElement>(".reading-line-text")?.textContent ?? "";
+}
+
+/**
+ * 把当前选区换算成「落在哪几行的哪些字」。
+ *
+ * 跨段（跨多个 `<p class="reading-line">`）时中间那些整行都算上，所以一条划线可以
+ * 有好几段 `spans`、共用一份样式 / 颜色 / 批注。返回的 `quote` 多段之间用换行拼
+ * （导出时会压成一行）。首尾的空白与空行剔掉 —— 划到句尾那个看不见的空格很丑。
+ */
+function selectionToSpans(range: Range): { spans: AnnotationSpan[]; quote: string } | null {
+  const startLine = lineElementOf(range.startContainer);
+  const endLine = lineElementOf(range.endContainer);
+  if (!startLine || !endLine) return null;
+  const root = startLine.closest(".reader-lines");
+  if (!root || !root.contains(endLine)) return null;
+  const lines = [...root.querySelectorAll<HTMLElement>(".reading-line[data-line]")];
+  const from = lines.indexOf(startLine);
+  const to = lines.indexOf(endLine);
+  if (from < 0 || to < 0 || to < from) return null;
+  const spans: AnnotationSpan[] = [];
+  for (let i = from; i <= to; i += 1) {
+    const el = lines[i];
+    const line = Number(el.dataset.line);
+    if (!Number.isInteger(line)) continue;
+    const text = lineTextOf(el);
+    if (!text.trim()) continue;
+    const rawStart = i === from ? offsetInLine(el, range.startContainer, range.startOffset) : 0;
+    const rawEnd = i === to ? offsetInLine(el, range.endContainer, range.endOffset) : text.length;
+    const start = Math.max(0, Math.min(rawStart, text.length));
+    const end = Math.max(0, Math.min(rawEnd, text.length));
+    if (end > start) spans.push({ line, start, end });
+  }
+  if (!spans.length) return null;
+  const textOf = (line: number) => {
+    const el = lines.find((node) => Number(node.dataset.line) === line);
+    return el ? lineTextOf(el) : "";
+  };
+  // 首尾空白剔掉
+  while (spans.length) {
+    const span = spans[0];
+    const text = textOf(span.line);
+    while (span.start < span.end && /\s/.test(text[span.start] ?? "")) span.start += 1;
+    if (span.end > span.start) break;
+    spans.shift();
+  }
+  while (spans.length) {
+    const span = spans[spans.length - 1];
+    const text = textOf(span.line);
+    while (span.end > span.start && /\s/.test(text[span.end - 1] ?? "")) span.end -= 1;
+    if (span.end > span.start) break;
+    spans.pop();
+  }
+  if (!spans.length) return null;
+  const quote = spans.map((span) => textOf(span.line).slice(span.start, span.end)).join("\n");
+  return quote.trim() ? { spans, quote } : null;
+}
+
+/**
+ * 两段选中是不是同一处（同一段原文、同样的几个字符区间）。
+ *
+ * 用途：点浮条上的色点时，浏览器会再冒一次 `mouseup`，有些 WebView 此时
+ * 选区还在——要靠它认出「这不是新划的一段」，别把刚挑的笔色冲掉。
+ */
+function isSameSelection(
+  a: { spans: AnnotationSpan[]; quote: string },
+  b: { spans: AnnotationSpan[]; quote: string },
+): boolean {
+  return (
+    a.quote === b.quote &&
+    a.spans.length === b.spans.length &&
+    a.spans.every((span, index) => {
+      const next = b.spans[index];
+      return span.line === next.line && span.start === next.start && span.end === next.end;
+    })
+  );
+}
 
 /**
  * The reading view: the core's text, scrolled inside a **book**.
@@ -190,6 +423,21 @@ export default function Reader(props: {
   const [unlocked, setUnlocked] = useState<Unlocked[]>([]);
   // 书签：内核 `progress.bookmarks` 的镜像
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  // 划线 + 批注：整份表（跨书，存本机 `gui_settings`）—— 阅读页只画这本书的那几条
+  const [allAnnotations, setAllAnnotations] = useState<Annotation[]>([]);
+  // 选中文字后浮出的工具条：落在哪几行哪些字、划中的原文、浮条位置、当前选的笔色
+  const [picked, setPicked] = useState<{
+    spans: AnnotationSpan[];
+    quote: string;
+    left: number;
+    top: number;
+    color: string;
+  } | null>(null);
+  // 点开的一条划线（批注卡片跟着它走）
+  const [opened, setOpened] = useState<{ id: string; left: number; top: number } | null>(null);
+  // 卡片里正在敲的批注 / 是「看」还是「改」
+  const [draftNote, setDraftNote] = useState("");
+  const [noteEditing, setNoteEditing] = useState(false);
   // 屏顶行号（显示用；权威值在 cursor 里）
   const [topLine, setTopLine] = useState(props.book.current_line);
   // 每次点书签 +1：让丝带重挂载一次，把「插进去」的动画重放一遍
@@ -199,6 +447,9 @@ export default function Reader(props: {
   // 排版偏好（字 / 边距 / 纸面主题）与顶栏那两块小面板（Aa、主题）
   const [prefs, setPrefs] = useState<ReaderPrefs>(DEFAULT_READER_PREFS);
   const [panel, setPanel] = useState<Panel>(null);
+  // 背景图：藏起来的那枚 `<input type="file">`（点面板上的按钮去点它）+ 一句临时提示
+  const bgInputRef = useRef<HTMLInputElement>(null);
+  const [bgNotice, setBgNotice] = useState<string | null>(null);
   // 光点导读：开着时沿当前行慢慢走过一位「领路的」—— 一颗光点、跳进书里那只兔子，
   // 或者四五个字宽的一小段下划线（自己一伸一缩地往前爬）；划过的轨迹是字底下一条下划线
   // （兔子模式换成一串脚印，下划线模式那段短下划线自己就是领路的）。
@@ -221,12 +472,24 @@ export default function Reader(props: {
   // 走法共用一套，只有长相与颜色不同；光点模式不用挂类（见 App.css 的 .guide-crawl / .guide-wave）
   const guideModeClass =
     guideMarker === "underline" ? " guide-crawl" : guideMarker === "wave" ? " guide-wave" : "";
-  // 三块面板互斥：同一时刻最多开一块
+  // 六个角落 / 边条点下去各做什么（本机设置，见 lib/readerTapZones.ts）。
+  // 默认就是原来写死的那六样，所以没动过设置的人手感不变。
+  const [zoneActions, setZoneActions] = useState<ReaderTapZones>(DEFAULT_READER_TAP_ZONES);
+  // 还没读回设置之前别把默认值写回去（与上面的 prefsReady 同一个理由）
+  const zonesReady = useRef(false);
+  // 左上角悬停浮出小书架的延迟计时器（0 = 没在等）
+  const peekTimer = useRef(0);
+
+  // 五块面板互斥：同一时刻最多开一块
   const prefsOpen = panel === "type";
   const themeOpen = panel === "theme";
   const speedOpen = panel === "guide";
   // 第四块：内核 reader.* 那一节（2026-10-11 从「调一调」搬过来，见 lib/readerConfig.ts）
   const configOpen = panel === "config";
+  // 第五块：手势（六个角落 / 边条点下去做什么，本机设置）
+  const tapOpen = panel === "tap";
+  // 左上角还指着「回书架」时，悬停才浮出小书架（换成别的动作就不浮了）
+  const topLeftIsShelf = zoneActions["top-left"] === "shelf";
   // 上下两栏默认都收着，点屏幕中间才呼出；进来先亮一句提示，几秒后自己消失
   const [barOpen, setBarOpen] = useState(false);
   const [hintVisible, setHintVisible] = useState(true);
@@ -299,6 +562,166 @@ export default function Reader(props: {
     await props.onBookChanged?.(props.book.id);
     switchPdfView("text");
   }, [props.book.id, props.onBookChanged, switchPdfView]);
+
+  /* ---------------- 划线 + 批注 ---------------- */
+
+  // 读一次本机那份划线表（跨书；这本书的那几条从里面筛）
+  useEffect(() => {
+    let alive = true;
+    loadAnnotations()
+      .then((list) => {
+        if (alive) setAllAnnotations(list);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // 这本书的划线摊到每一行上（渲染 `.reading-line` 时按行号查）
+  const lineMarks = useMemo(
+    () => marksByLine(allAnnotations, props.book.id),
+    [allAnnotations, props.book.id],
+  );
+  // 卡片里正开着的那一条
+  const openedAnnotation = useMemo(
+    () => (opened ? (allAnnotations.find((ann) => ann.id === opened.id) ?? null) : null),
+    [allAnnotations, opened],
+  );
+
+  /** 写回整份划线表：先改界面（立刻看得到线），再写本机设置。 */
+  const commitAnnotations = useCallback((next: Annotation[]) => {
+    setAllAnnotations(next);
+    saveAnnotations(next).catch(() => setNotice("划线没存下来：本机设置写入失败"));
+  }, []);
+
+  /** 用户松开鼠标 / 手指：有选中文字就浮出工具条。 */
+  const captureSelection = useCallback((target?: EventTarget | null) => {
+    // 落在浮条 / 批注卡片上（挑笔色、保存批注、取色器）不是「重新选了一段」：
+    // 这一下直接不理，否则会把刚挑好的笔色冲回墨红
+    if (target instanceof Element && target.closest(".annot-menu, .annot-card")) return;
+    // 等一拍：有些 WebView 在 mouseup 里读到的还是旧选区
+    window.setTimeout(() => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || !selection.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      const mapped = selectionToSpans(range);
+      if (!mapped) return;
+      const rect = range.getBoundingClientRect();
+      const width = 344;
+      const left = Math.max(
+        ANNOT_EDGE_PX,
+        Math.min(
+          rect.left + rect.width / 2 - width / 2,
+          window.innerWidth - width - ANNOT_EDGE_PX,
+        ),
+      );
+      const top = Math.min(rect.bottom + 10, window.innerHeight - 108);
+      setOpened(null);
+      setPicked((prev) => ({
+        ...mapped,
+        left,
+        top,
+        // 同一段字又「松手」一次（比如重拖了一遍）：留着已经挑好的笔色；
+        // 换了一段才回到默认的墨红
+        color: prev && isSameSelection(prev, mapped) ? prev.color : DEFAULT_ANNOTATION_COLOR,
+      }));
+    }, 0);
+  }, []);
+
+  // 松手就去看看有没有选中文字（挂在 document 上：拖出正文再松手也算）
+  useEffect(() => {
+    const onUp = (event: MouseEvent | TouchEvent) => captureSelection(event.target);
+    document.addEventListener("mouseup", onUp);
+    document.addEventListener("touchend", onUp);
+    return () => {
+      document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("touchend", onUp);
+    };
+  }, [captureSelection]);
+
+  /** 挑好线型：把这次选区落成一条划线（批注留空，点它再写）。 */
+  const addAnnotation = useCallback(
+    (style: AnnotationStyle) => {
+      if (!picked) return;
+      const annotation: Annotation = {
+        id: newAnnotationId(),
+        bookId: props.book.id,
+        bookTitle: props.book.title,
+        spans: picked.spans,
+        style,
+        color: normalizeAnnotationColor(picked.color) || DEFAULT_ANNOTATION_COLOR,
+        quote: picked.quote,
+        note: "",
+        createdAt: new Date().toISOString(),
+      };
+      commitAnnotations(upsertAnnotation(allAnnotations, annotation));
+      window.getSelection()?.removeAllRanges();
+      setPicked(null);
+    },
+    [picked, allAnnotations, commitAnnotations, props.book.id, props.book.title],
+  );
+
+  /** 点一条划线：在它下方弹出批注卡片（有批注先看，没有就直接是输入框）。 */
+  const openAnnotation = useCallback(
+    (event: React.MouseEvent<HTMLElement>, id: string) => {
+      event.stopPropagation();
+      setPicked(null);
+      const annotation = allAnnotations.find((ann) => ann.id === id);
+      if (!annotation) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const width = 336;
+      const left = Math.max(
+        ANNOT_EDGE_PX,
+        Math.min(rect.left, window.innerWidth - width - ANNOT_EDGE_PX),
+      );
+      const top = Math.min(rect.bottom + 8, window.innerHeight - 196);
+      setOpened({ id, left, top });
+      setDraftNote(annotation.note);
+      setNoteEditing(!annotation.note.trim());
+    },
+    [allAnnotations],
+  );
+
+  /** 保存批注（清空再存 = 只留划线、不要批注）。 */
+  const saveNote = useCallback(() => {
+    if (!opened) return;
+    commitAnnotations(patchAnnotation(allAnnotations, opened.id, { note: draftNote.trim() }));
+    setNoteEditing(false);
+  }, [opened, draftNote, allAnnotations, commitAnnotations]);
+
+  /** 删掉这条划线（连同批注）。 */
+  const deleteOpened = useCallback(() => {
+    if (!opened) return;
+    commitAnnotations(removeAnnotation(allAnnotations, opened.id));
+    setOpened(null);
+    setDraftNote("");
+  }, [opened, allAnnotations, commitAnnotations]);
+
+  /** 一行文字：划过的片段包一层（点它弹批注卡片），没划过的原样输出。 */
+  const renderAnnotatedLine = (line: string, marks: LineMark[]) => {
+    if (!marks.length) return line;
+    return lineSegments(line, marks).map((segment, index) =>
+      segment.mark ? (
+        <span
+          key={index}
+          className={`annot annot-${segment.mark.style}${segment.mark.hasNote ? " annot-noted" : ""}`}
+          style={
+            {
+              "--annot-color": segment.mark.color,
+              "--annot-tint": annotationTint(segment.mark.color),
+            } as CSSProperties
+          }
+          title={segment.mark.hasNote ? "点开看这条批注" : "点一下写批注"}
+          onClick={(event) => openAnnotation(event, segment.mark!.id)}
+        >
+          {segment.text}
+        </span>
+      ) : (
+        <span key={index}>{segment.text}</span>
+      ),
+    );
+  };
   // 跳转 / 翻行后短暂亮一下「第几行」（位置感就是上下文）
   const [posChip, setPosChip] = useState<string | null>(null);
   // 本次会话的开始时刻
@@ -1022,16 +1445,40 @@ export default function Reader(props: {
       if (guideSyncTimer.current) window.clearTimeout(guideSyncTimer.current);
       if (guideSaveTimer.current) window.clearTimeout(guideSaveTimer.current);
       if (searchHitTimer.current) window.clearTimeout(searchHitTimer.current);
+      if (peekTimer.current) window.clearTimeout(peekTimer.current);
     },
     [],
   );
 
-  // 开书时读回排版偏好（界面自己的状态，存在本机 gui_settings）
+  // 开书时读回排版偏好（界面自己的状态，存在本机 gui_settings）。
+  // 背景图不在那段 JSON 里：先读单独的文件；老版本把图塞在 prefs 里的，就地迁出来。
   useEffect(() => {
     let alive = true;
     loadReaderPrefs()
-      .then((saved) => {
-        if (alive) setPrefs(saved);
+      .then(async (saved) => {
+        let image: string | null = null;
+        try {
+          image = await readerBackground();
+        } catch {
+          image = null;
+        }
+        if (!alive) return;
+        if (!image && saved.bgImage) {
+          // 老数据：图还在 JSON 里。大图先压小一圈（老版本是 2400px / q0.9）再写文件，
+          // 随后那次保存会把 JSON 里的几 MB 去掉；小图原样搬，不白降一次质。
+          const legacy = saved.bgImage;
+          const stored =
+            legacy.length > BG_RECOMPRESS_ABOVE ? await shrinkBackgroundImage(legacy) : legacy;
+          if (!alive) return;
+          try {
+            await setReaderBackground(stored);
+            image = stored;
+          } catch {
+            // 文件写不进去（磁盘满 / 权限）：这次先用旧图，至少别当用户没设背景
+            image = legacy;
+          }
+        }
+        if (alive) setPrefs({ ...saved, bgImage: image ?? "" });
       })
       .catch(() => undefined)
       .finally(() => {
@@ -1051,6 +1498,29 @@ export default function Reader(props: {
     }, 400);
     return () => window.clearTimeout(timer);
   }, [prefs]);
+
+  // 开书时读回六个角落 / 边条的手势表（同样是本机 gui_settings，但按一下就该立刻生效，
+  // 所以不做防抖 —— 改一块就写一次）
+  useEffect(() => {
+    let alive = true;
+    loadReaderTapZones()
+      .then((saved) => {
+        if (alive) setZoneActions(saved);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        // 读失败也要放行，否则用户改了手势永远存不进去
+        zonesReady.current = true;
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!zonesReady.current) return;
+    saveReaderTapZones(zoneActions).catch(() => undefined);
+  }, [zoneActions]);
 
   // 「这一场挑过哪几种颜色」只在这三样真的变了时才动（改字号、改纸色都不算）。
   // 空串 = 出厂色，不算自定义，所以不进集合；换过的颜色留在集合里 —— 换来换去
@@ -1405,9 +1875,49 @@ export default function Reader(props: {
     setPrefs((prev) => normalizeReaderPrefs({ ...prev, ...patch }));
   }
 
-  /** 恢复默认排版。 */
+  /** 恢复默认排版（背景图也撤掉 —— 默认值里就是空）。 */
   function resetPrefs() {
     setPrefs({ ...DEFAULT_READER_PREFS });
+    setBgNotice(null);
+    void setReaderBackground(null).catch(() => undefined);
+  }
+
+  /**
+   * 挑一张图当阅读背景。
+   *
+   * 走浏览器自己的文件选择器（`accept` 只列图片，各平台都是原生的那一套）：
+   * 读进来先压到长边 2000px，写成 `reader/background.*` 这张独立文件 —— 见
+   * `readBackgroundImage`。同一个文件再选一次也要能触发，所以读完把 input 的值清空。
+   */
+  async function handleBgPick(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    // `accept` 已经把目录里的非图片挡掉大半，但「所有文件」还能绕过来，这里再认一次
+    const isImage =
+      file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(file.name);
+    if (!isImage) {
+      setBgNotice("这不是图片，换一张 png / jpg / webp / gif。");
+      return;
+    }
+    // 原图可以有几十 MB（读进来先压，但太夸张的还是先挡一下，免得卡住）
+    if (file.size > 32 * 1024 * 1024) {
+      setBgNotice("图片太大了（上限 32MB），换一张小一点的。");
+      return;
+    }
+    try {
+      const dataUrl = await readBackgroundImage(file);
+      // 先让纸面立刻换过来，再把图落到磁盘（写失败时这次至少还能看）
+      updatePrefs({ bgImage: dataUrl });
+      setBgNotice(null);
+      try {
+        await setReaderBackground(dataUrl);
+      } catch {
+        setBgNotice("这张图没能存到磁盘，下次打开这本书时背景会没有。");
+      }
+    } catch {
+      setBgNotice("这张图读不出来，换一张试试。");
+    }
   }
 
   /** Toggle the bookmark on the top line, then write the whole list back. */
@@ -1490,6 +2000,112 @@ export default function Reader(props: {
     }
   }
 
+  /* ---------------- 六个角落 / 边条的手势 ---------------- */
+
+  /** 收起左上角那块「悬停浮出的小书架」，并把还在等的计时器撤掉。 */
+  const cancelShelfPeek = useCallback(() => {
+    if (peekTimer.current) {
+      window.clearTimeout(peekTimer.current);
+      peekTimer.current = 0;
+    }
+    setShelfPeek(false);
+  }, []);
+
+  /** 呼出 / 收起上下两栏（点屏幕中间与「上下两栏」这个手势走同一条路）。 */
+  function toggleBars() {
+    setTocOpen(false);
+    if (barOpen) {
+      setPanel(null);
+      setBarOpen(false);
+    } else {
+      setBarOpen(true);
+      setHintVisible(false);
+    }
+  }
+
+  /**
+   * 把某个区域被指派的事做一遍。
+   *
+   * 每一项都沿用原来写死时的那几行：目录 / 玩偶会把别的浮层收掉、上一页 / 下一页先收目录、
+   * 「回书架」与上栏那颗走同一条 `finish()`（记账之后再走）。所以换位置不换行为。
+   */
+  function runTapAction(action: ReaderTapAction) {
+    switch (action) {
+      case "shelf":
+        void finish();
+        break;
+      case "bookmark":
+        setTocOpen(false);
+        void toggleBookmark();
+        break;
+      case "toc":
+        // 与左下角原来那一下完全一样：开目录时把两栏与面板收掉
+        setTocOpen((open) => !open);
+        setBarOpen(false);
+        setPanel(null);
+        setHintVisible(false);
+        break;
+      case "toy":
+        popToy();
+        break;
+      case "prev":
+        setTocOpen(false);
+        scrollScreen(-1);
+        break;
+      case "next":
+        setTocOpen(false);
+        scrollScreen(1);
+        break;
+      case "bars":
+        toggleBars();
+        break;
+      case "guide":
+        toggleGuide();
+        break;
+      case "autoturn":
+        autoTurn.toggle();
+        break;
+      case "save":
+        void persist();
+        break;
+      case "search":
+        openSearch();
+        break;
+      case "index":
+        void buildIndex();
+        break;
+      case "image":
+        // 只有 PDF 有第二种看法；别的格式点了什么也不发生
+        if (isPdf) switchPdfView("image");
+        break;
+      case "none":
+      default:
+        // 特意留白：把这块热区还给选字与批注
+        break;
+    }
+  }
+
+  /**
+   * 按落点比例（0~1）算这是哪一块热区。
+   *
+   * 四角先判（`CORNER_HIT`），两条边后判（更窄的 `EDGE_HIT`，且只在纵向中段）——
+   * 于是四个角与两条边之间那一圈窄窄的死区不属于任何一块，贴着正文边缘点不会误触。
+   * 中间那块不在这里（它呼出两栏，由 `MIDDLE_BAND` 单独判断）。
+   */
+  function zoneForPoint(x: number, y: number): ReaderTapZone | null {
+    const left = x < CORNER_HIT;
+    const right = x > 1 - CORNER_HIT;
+    const top = y < CORNER_HIT;
+    const bottom = y > 1 - CORNER_HIT;
+    if (top && left) return "top-left";
+    if (top && right) return "top-right";
+    if (bottom && left) return "bottom-left";
+    if (bottom && right) return "bottom-right";
+    if (x < EDGE_HIT && y >= CORNER_HIT && y <= 1 - CORNER_HIT) return "left-edge";
+    if (x > 1 - EDGE_HIT && y >= CORNER_HIT && y <= 1 - CORNER_HIT) return "right-edge";
+    return null;
+  }
+
   // 屏顶这一行有没有书签（丝带的「插着 / 没插」状态）
   const markedHere = bookmarks.some((mark) => mark.line === topLine);
 
@@ -1508,7 +2124,21 @@ export default function Reader(props: {
   // 导读那几枚取色器**显示什么颜色**：自定义色优先，没填就给这一档的出厂色
   // （下划线 / 波浪线那两号出厂跟正文墨色 —— 于是色块总与屏幕上那一条线同色）
   const guideColors = guideSwatchColor(prefs, palette.ink, guideMarker);
-  // 贴成 CSS 变量：整张纸（底色、书页堆叠、书口、纸面的光、书脊的暗、正文墨色）全跟着走
+  // 背景图那几层：图片垫最底下，上面盖一层「淡化」（纸色半透明），最上面仍是原来那道纸面光。
+  // 只在这张纸上生效 —— 右侧书口 / 桌面不跟着变。淡化 0% 时那层是全透明的。
+  const bgVars: Record<string, string> = prefs.bgImage
+    ? {
+        "--reader-bg-image": `url("${prefs.bgImage}")`,
+        "--reader-bg-size": prefs.bgFill === "repeat" ? "auto" : prefs.bgFill,
+        "--reader-bg-repeat": prefs.bgFill === "repeat" ? "repeat" : "no-repeat",
+        "--reader-bg-position": prefs.bgFill === "repeat" ? "0 0" : "center",
+        "--reader-bg-veil": hexToRgba(
+          palette.paper,
+          Math.min(100, Math.max(0, prefs.bgFade)) / 100,
+        ),
+      }
+    : {};
+  // 贴成 CSS 变量：整张纸（底色、书页堆叠、书口、纸面的光、书脊的暗、正文墨色、背景图）全跟着走
   const paperVars = {
     "--paper": palette.paper,
     "--paper-edge-fill": palette.edgeFill,
@@ -1516,6 +2146,7 @@ export default function Reader(props: {
     "--reader-ink": palette.ink,
     "--reader-sheen": palette.sheen,
     "--reader-spine": palette.spine,
+    ...bgVars,
   } as CSSProperties;
 
   // pdf 默认按图片浏览：整页交给 PdfReader（位置、时长、成就与「转换成文字」都在它里面），
@@ -1535,28 +2166,66 @@ export default function Reader(props: {
     <main
       className={`container reader${barOpen ? " bars-open" : ""}${toy ? " toy-open" : ""}`}
       style={paperVars}
-      // 左上角悬停：鼠标一进那一小块就浮出「首页书架」的略缩图。
-      // 用 mousemove 判断而不是铺一块透明热区，是为了不挡住最上面几行正文的拖选。
+      // 左上角悬停：停够 `PEEK_DELAY_MS` 才浮出「首页书架」的略缩图（且只有左上角
+      // 还指着「回书架」时才浮）。用 mousemove 判断而不是铺一块透明热区，是为了不挡住
+      // 最上面几行正文的拖选；正在拖选 / 在别处按下鼠标就立刻收起 —— 划线、批注不会被它挡。
       onMouseMove={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
-        if (!rect.width || !rect.height) return;
-        const inPeek =
+        // 已经浮着时放宽到整块四角（0.22），免得手一抖就收掉；还没浮时只有 0.14
+        const hit = shelfPeek ? CORNER_HIT : PEEK_HIT;
+        const inZone =
+          topLeftIsShelf &&
           !barOpen &&
-          (event.clientX - rect.left) / rect.width < CORNER_HIT &&
-          (event.clientY - rect.top) / rect.height < CORNER_HIT;
-        // 值没变就不重渲染（mousemove 一秒几十次）
-        setShelfPeek((open) => (open === inPeek ? open : inPeek));
+          rect.width > 0 &&
+          rect.height > 0 &&
+          (event.clientX - rect.left) / rect.width < hit &&
+          (event.clientY - rect.top) / rect.height < hit;
+        if (!inZone) {
+          cancelShelfPeek();
+          return;
+        }
+        // 正在拖选文字：绝不弹出来（那正是它从前最碍事的时候）。
+        // 这一句放在范围判断之后：鼠标在正文中间时不必每帧都去问一次选区
+        const selection = window.getSelection();
+        if (selection && !selection.isCollapsed) {
+          cancelShelfPeek();
+          return;
+        }
+        // 已经浮着 / 已经在等：别再排一次（mousemove 一秒几十次）
+        if (shelfPeek || peekTimer.current) return;
+        peekTimer.current = window.setTimeout(() => {
+          peekTimer.current = 0;
+          setShelfPeek(true);
+        }, PEEK_DELAY_MS);
       }}
-      onMouseLeave={() => setShelfPeek(false)}
+      onMouseLeave={cancelShelfPeek}
+      // 一滚轮就收起：略缩图正压在正文上时，滚轮落在它身上不会转给下面的书页 ——
+      // 先收掉，下一格滚轮就照常滚（只丢一格，比一直卡住好）
+      onWheel={() => {
+        if (shelfPeek || peekTimer.current) cancelShelfPeek();
+      }}
+      // 一按下鼠标就收起略缩图：它若正压在正文上，拖动选字 / 划线也不会被它吃掉。
+      // 点在略缩图自己身上不算（否则它会在 click 之前先消失，反而点不到）。
+      onMouseDown={(event) => {
+        const node = event.target as HTMLElement | null;
+        if (node?.closest(".reader-shelf-thumb")) return;
+        cancelShelfPeek();
+      }}
       onClick={(event) => {
         // 上下两栏 / 搜索 / 目录 / 书签丝带 / 书架略缩图 / 玩偶都是浮层，
         // 点它们不算「点书页」（它们自己的 onClick 负责）
         const node = event.target as HTMLElement | null;
         if (
           node?.closest(
-            ".reader-bar, .reader-search-scrim, .reader-toc, .reader-bookmark, .reader-shelf-thumb, .reader-toy",
+            ".reader-bar, .reader-search-scrim, .reader-toc, .reader-bookmark, .reader-shelf-thumb, .reader-toy, .annot-menu, .annot-card",
           )
         ) {
+          return;
+        }
+        // 点别处先收起划线的浮条 / 批注卡片；这一下只当「关浮层」，不再翻页 / 呼出两栏
+        if (picked || opened) {
+          setPicked(null);
+          setOpened(null);
           return;
         }
         // 拖选文字松手也会来一次 click，别把两栏抖出来
@@ -1572,40 +2241,15 @@ export default function Reader(props: {
         if (!rect.width || !rect.height) return;
         const x = (event.clientX - rect.left) / rect.width;
         const y = (event.clientY - rect.top) / rect.height;
-        const left = x < CORNER_HIT;
-        const right = x > 1 - CORNER_HIT;
-        const top = y < CORNER_HIT;
-        const bottom = y > 1 - CORNER_HIT;
 
-        // 四个角：左上（略缩图由 hover 负责，点角落本身不做事）/ 右上书签 /
-        // 左下目录 / 右下随机玩偶
-        if (top && left) return;
-        if (top && right) {
-          setTocOpen(false);
-          void toggleBookmark();
-          return;
-        }
-        if (bottom && left) {
-          setTocOpen((open) => !open);
-          setBarOpen(false);
-          setPanel(null);
-          setHintVisible(false);
-          return;
-        }
-        if (bottom && right) {
-          popToy();
-          return;
-        }
-        // 左右两边（不含上下那两段角）：上一页 / 下一页，滚一屏。
-        // 这里用更窄的 `EDGE_HIT`，与四角之间留一圈死区
-        if (x < EDGE_HIT && y >= CORNER_HIT && y <= 1 - CORNER_HIT) {
-          setTocOpen(false);
-          scrollScreen(-1);
-          return;
-        }
-        if (x > 1 - EDGE_HIT && y >= CORNER_HIT && y <= 1 - CORNER_HIT) {
-          setTocOpen(false);
-          scrollScreen(1);
+        // 先看这是哪一块热区（四角 / 两条边），再照「手势」表里给它派的活做
+        const zone = zoneForPoint(x, y);
+        if (zone) {
+          const action = zoneActions[zone];
+          // 左上角的「回书架」保着老手感：角落本身不做事，悬停浮出的小书架才是出口。
+          // （那一块 22% 见方、离第一行正文最近，误点一下就离开整本书，代价太大）
+          if (zone === "top-left" && action === "shelf") return;
+          runTapAction(action);
           return;
         }
         // 屏幕中间那一块：呼出 / 收起两栏（比例判断，与窗口大小无关）
@@ -1618,14 +2262,7 @@ export default function Reader(props: {
           return;
         }
         // 呼出 / 收起两栏（收起时顺手把面板与目录也带走）
-        setTocOpen(false);
-        if (barOpen) {
-          setPanel(null);
-          setBarOpen(false);
-        } else {
-          setBarOpen(true);
-          setHintVisible(false);
-        }
+        toggleBars();
       }}
     >
       {/* 点屏幕中间同时呼出上下两栏（都是浮层，不占布局，书页不会跳）。
@@ -2192,6 +2829,79 @@ export default function Reader(props: {
                   onChange={(event) => updatePrefs({ customFg: event.currentTarget.value })}
                 />
               </div>
+              <div className="pref-row">
+                <span className="pref-label">背景图</span>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => bgInputRef.current?.click()}
+                >
+                  {prefs.bgImage ? "换一张" : "选择图片"}
+                </button>
+                {prefs.bgImage ? (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      updatePrefs({ bgImage: "" });
+                      setBgNotice(null);
+                      // 图在磁盘上：不删的话下次开书又会回来
+                      void setReaderBackground(null).catch(() => undefined);
+                    }}
+                  >
+                    移除
+                  </button>
+                ) : null}
+                {/* 藏起来的原生文件选择器：`accept` 只列图片，点上面那枚按钮去点它 */}
+                <input
+                  ref={bgInputRef}
+                  type="file"
+                  hidden
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  aria-label="选择背景图片"
+                  onChange={(event) => void handleBgPick(event)}
+                />
+              </div>
+              {prefs.bgImage ? (
+                <>
+                  <div className="pref-row">
+                    <span className="pref-label">摆放方式</span>
+                    <div className="pref-pill pref-bg-fill" role="group" aria-label="背景图摆放方式">
+                      {READER_BG_FILLS.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className={prefs.bgFill === item.id ? "on" : ""}
+                          aria-pressed={prefs.bgFill === item.id}
+                          title={item.hint}
+                          onClick={() => updatePrefs({ bgFill: item.id })}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="pref-row">
+                    <span className="pref-label">淡化</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={prefs.bgFade}
+                      aria-label="背景图淡化程度"
+                      onChange={(event) =>
+                        updatePrefs({ bgFade: Number(event.currentTarget.value) })
+                      }
+                    />
+                    <span className="pref-unit">{prefs.bgFade}%</span>
+                  </div>
+                  <p className="pref-note">
+                    图片垫在文字下面；字看不清时把「淡化」往右推（盖一层纸色）。
+                  </p>
+                </>
+              ) : null}
+              {bgNotice ? <p className="pref-note">{bgNotice}</p> : null}
               {prefs.customBg || prefs.customFg ? (
                 <p className="pref-note">
                   自定义色盖在主题之上，换预设时它们不会被改动。
@@ -2230,6 +2940,67 @@ export default function Reader(props: {
                 if (path.startsWith("reader.auto_scroll")) autoTurn.reload();
               }}
             />
+          ) : null}
+        </div>
+
+        {/* 手势：六个角落 / 边条点下去各做什么（本机设置，存 gui_settings 的 reader.tapZones）。
+            出厂就是原来写死的那六样；每一块都能换成栏里那些常用动作，或者干脆「不做事」
+            把那块热区还给选字与批注。改一块当场生效、当场存。 */}
+        <div className="reader-prefs-wrap">
+          <button
+            type="button"
+            className={`ghost reader-prefs-btn${tapOpen ? " on" : ""}`}
+            title="六个角落与左右两条边：点下去各做什么（改完立刻生效，只存本机）"
+            aria-label="边角手势"
+            aria-expanded={tapOpen}
+            onClick={() => setPanel((open) => (open === "tap" ? null : "tap"))}
+          >
+            手势
+          </button>
+          {tapOpen ? (
+            <div className="reader-prefs reader-tap" role="group" aria-label="边角手势">
+              <p className="reader-prefs-lead">
+                屏幕上六个角落 / 边条点下去做什么 —— 只改这台电脑上的手感，存在本机；
+                点屏幕中间仍然是呼出上下两栏。
+              </p>
+              {READER_TAP_ZONES.map((zone) => (
+                <label className="pref-row reader-tap-row" key={zone.id} title={zone.hint}>
+                  <span className="pref-label">{zone.label}</span>
+                  <select
+                    value={zoneActions[zone.id]}
+                    aria-label={`${zone.label}点下去做什么`}
+                    onChange={(event) =>
+                      // 值先过一遍归一化：将来删掉某个动作时，坏值会自己回落到出厂值
+                      setZoneActions((current) =>
+                        normalizeReaderTapZones({
+                          ...current,
+                          [zone.id]: event.currentTarget.value,
+                        }),
+                      )
+                    }
+                  >
+                    {READER_TAP_ACTIONS.map((action) => (
+                      <option key={action.id} value={action.id} title={action.hint}>
+                        {action.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+              <p className="pref-note">
+                左上角的「回书架」靠悬停浮出小书架（点略缩图才走，点角落本身不做事）；把它换成别的，
+                悬停就不再浮出。想彻底不被那块木头打扰，就把它设成「不做事」。
+              </p>
+              <button
+                type="button"
+                className="ghost"
+                disabled={isDefaultReaderTapZones(zoneActions)}
+                title="六个角 / 边条回到出厂：左上回书架、右上书签、左下目录、右下玩偶、左右两条边翻页"
+                onClick={() => setZoneActions({ ...DEFAULT_READER_TAP_ZONES })}
+              >
+                恢复默认
+              </button>
+            </div>
           ) : null}
         </div>
       </footer>
@@ -2396,30 +3167,33 @@ export default function Reader(props: {
         {appending ? <p className="toast dim">正在往下接…</p> : null}
       </div>
 
-      {/* 左上角悬停浮出的小书架：点了就带着账回书架（与「← 书架」同一条路） */}
-      <button
-        type="button"
-        className={`reader-shelf-thumb${shelfPeek ? " open" : ""}`}
-        title="回书架（先把读到哪记好）"
-        aria-label="回书架"
-        tabIndex={shelfPeek ? 0 : -1}
-        onClick={() => void finish()}
-        onMouseMove={(event) => event.stopPropagation()}
-      >
-        <span className="peek-shelf" aria-hidden="true">
-          <span className="peek-shelf-row">
-            {PEEK_SPINES.map((spine) => (
-              <span
-                key={spine.color}
-                className="peek-spine"
-                style={{ backgroundColor: spine.color, height: `${spine.height}%` }}
-              />
-            ))}
+      {/* 左上角悬停浮出的小书架：点了就带着账回书架（与「← 书架」同一条路）。
+          只有左上角还指派着「回书架」时才渲染 —— 换成别的动作，这块悬停就不再浮出来。 */}
+      {topLeftIsShelf ? (
+        <button
+          type="button"
+          className={`reader-shelf-thumb${shelfPeek ? " open" : ""}`}
+          title="回书架（先把读到哪记好）"
+          aria-label="回书架"
+          tabIndex={shelfPeek ? 0 : -1}
+          onClick={() => void finish()}
+          onMouseMove={(event) => event.stopPropagation()}
+        >
+          <span className="peek-shelf" aria-hidden="true">
+            <span className="peek-shelf-row">
+              {PEEK_SPINES.map((spine) => (
+                <span
+                  key={spine.color}
+                  className="peek-spine"
+                  style={{ backgroundColor: spine.color, height: `${spine.height}%` }}
+                />
+              ))}
+            </span>
+            <span className="peek-shelf-board" />
           </span>
-          <span className="peek-shelf-board" />
-        </span>
-        <span className="peek-label">回书架</span>
-      </button>
+          <span className="peek-label">回书架</span>
+        </button>
+      ) : null}
 
       {/* 左下角点开的目录：按章节标题跳到那一行（内核认出来的那些） */}
       {tocOpen ? (
@@ -2480,7 +3254,7 @@ export default function Reader(props: {
           玩偶蹦出来时书的右边收窄、右侧桌面加宽，看着就是书往左让了一让 */}
       <div className={`reader-book${toy ? " shifted" : ""}`}>
         <div className="book-stack" aria-hidden="true" />
-        <div className="reader-page">
+        <div className={`reader-page${prefs.bgImage ? " has-bg" : ""}`}>
           {/* 右上角那枚拟物书签：点一下插进这一页，再点一下拔出来 */}
           <button
             type="button"
@@ -2532,6 +3306,8 @@ export default function Reader(props: {
                   return (
                     <p
                       key={slice.start + index}
+                      // 划线按「源行号 + 行内偏移」定位，选区换算（selectionToSpans）就靠它
+                      data-line={slice.start + index}
                       className={`reading-line${blank ? " blank" : paraStart ? " para-start" : ""}${lit}${matched ? " search-hit" : ""}`}
                     >
                       {/* 轨迹：当前行每一折一条（走过的整条、正在走的那折按进度长）。
@@ -2548,8 +3324,13 @@ export default function Reader(props: {
                             />
                           ))
                         : null}
-                      {/* 内层这一层是给「量这一行文字铺到哪儿」用的（折行时 getClientRects 一折一条） */}
-                      <span className="reading-line-text">{line || "\u00a0"}</span>
+                      {/* 内层这一层是给「量这一行文字铺到哪儿」用的（折行时 getClientRects 一折一条）；
+                          划过的片段在这里拆成一截一截（点某一截就弹那条划线的批注卡片） */}
+                      <span className="reading-line-text">
+                        {blank
+                          ? "\u00a0"
+                          : renderAnnotatedLine(line, lineMarks.get(slice.start + index) ?? [])}
+                      </span>
                       {/* 领路的那位挂在这一行里：位置每帧由 Reader 直接写 style，不走 React 渲染。
                           光点是一颗小球；下划线 / 波浪线那两号没有实体的那一位（那一段线就是它），
                           这个 span 只当「量这一行折到哪儿」的锚点 —— 所以它里面是空的，但**不能省** */}
@@ -2568,6 +3349,151 @@ export default function Reader(props: {
           </div>
         </div>
       </div>
+
+      {/* 选中文字后浮出的小工具条：三种线型 + 笔色 + 取消。
+          位置是屏幕上算好的固定坐标（贴着选区下方），点它自己不算「点书页」 */}
+      {picked ? (
+        <div
+          className="annot-menu"
+          style={{ left: `${picked.left}px`, top: `${picked.top}px` }}
+          onClick={(event) => event.stopPropagation()}
+          role="toolbar"
+          aria-label="划线"
+        >
+          {ANNOTATION_STYLES.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className="annot-style"
+              title={`${item.label}：${item.hint}`}
+              // 按在浮条上时别让浏览器把选中的字取消掉（这样挑笔色期间原文还亮着）
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => addAnnotation(item.id)}
+            >
+              <span className={`annot-sample annot-sample-${item.id}`} aria-hidden="true" />
+              {item.label}
+            </button>
+          ))}
+          <span className="annot-swatches" role="group" aria-label="笔色">
+            {ANNOTATION_COLORS.map((color) => (
+              <button
+                key={color}
+                type="button"
+                className={`annot-swatch${picked.color === color ? " on" : ""}`}
+                style={{ "--swatch": color } as CSSProperties}
+                title={color}
+                aria-label={`笔色 ${color}`}
+                aria-pressed={picked.color === color}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => setPicked({ ...picked, color })}
+              />
+            ))}
+            {/* 取色器：常用色不够用时自己调一个 */}
+            <label
+              className="annot-swatch annot-swatch-custom"
+              title="自定义颜色"
+              style={{ "--swatch": picked.color } as CSSProperties}
+            >
+              <input
+                type="color"
+                value={picked.color}
+                aria-label="自定义颜色"
+                onChange={(event) => {
+                  const color = normalizeAnnotationColor(event.target.value);
+                  if (color) setPicked({ ...picked, color });
+                }}
+              />
+            </label>
+          </span>
+          <button
+            type="button"
+            className="annot-cancel"
+            title="取消（Esc）"
+            aria-label="取消划线"
+            onClick={() => {
+              window.getSelection()?.removeAllRanges();
+              setPicked(null);
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      ) : null}
+
+      {/* 点一条划线：下方一张小卡片 —— 没批注就是输入框；有批注先看，点「编辑」再改 */}
+      {opened && openedAnnotation ? (
+        <div
+          className="annot-card"
+          style={
+            {
+              left: `${opened.left}px`,
+              top: `${opened.top}px`,
+              "--annot-color": openedAnnotation.color,
+              "--annot-tint": annotationTint(openedAnnotation.color),
+            } as CSSProperties
+          }
+          onClick={(event) => event.stopPropagation()}
+          role="dialog"
+          aria-label="批注"
+        >
+          <div className="annot-card-quote">
+            {openedAnnotation.quote.replace(/\s*\n\s*/g, " ")}
+          </div>
+          {noteEditing ? (
+            <>
+              <textarea
+                className="annot-card-input"
+                value={draftNote}
+                placeholder="写一句批注…（⌘/Ctrl + Enter 保存）"
+                autoFocus
+                onChange={(event) => setDraftNote(event.target.value)}
+                onKeyDown={(event) => {
+                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                    event.preventDefault();
+                    saveNote();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    setOpened(null);
+                  }
+                }}
+              />
+              <div className="annot-card-actions">
+                <button type="button" className="annot-card-save" onClick={saveNote}>
+                  保存
+                </button>
+                <button type="button" className="ghost" onClick={() => setOpened(null)}>
+                  取消
+                </button>
+                <button type="button" className="ghost annot-card-delete" onClick={deleteOpened}>
+                  删掉划线
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="annot-card-note">{openedAnnotation.note}</p>
+              <div className="annot-card-actions">
+                <button
+                  type="button"
+                  className="annot-card-save"
+                  onClick={() => {
+                    setDraftNote(openedAnnotation.note);
+                    setNoteEditing(true);
+                  }}
+                >
+                  编辑
+                </button>
+                <button type="button" className="ghost" onClick={() => setOpened(null)}>
+                  关闭
+                </button>
+                <button type="button" className="ghost annot-card-delete" onClick={deleteOpened}>
+                  删掉划线
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      ) : null}
     </main>
   );
 }

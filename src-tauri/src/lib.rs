@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use tauri::{Manager, State};
 
 use core_client::CoreState;
-use db::{BookRow, Chunk, Db, Hit, Position, MAX_INDEX_LINES};
+use db::{BookRow, Chunk, CompactReport, Db, Hit, Position, StorageStats, MAX_INDEX_LINES};
 
 /// The archive commands' return value: what one restore brought back.
 #[derive(Debug, Serialize)]
@@ -325,6 +325,20 @@ fn reset_cache(state: State<'_, Db>) -> Result<(), String> {
     tauri::async_runtime::block_on(state.reset()).map_err(|err| err.to_string())
 }
 
+/// How much disk the local cache uses, and how much of that is reclaimable.
+#[tauri::command]
+fn cache_storage(state: State<'_, Db>) -> Result<StorageStats, String> {
+    // 纯读：设置页的「本机缓存」那一块显示它
+    tauri::async_runtime::block_on(state.storage_stats()).map_err(|err| err.to_string())
+}
+
+/// Squeeze the cache file (FTS optimize + VACUUM + WAL truncate).
+#[tauri::command]
+fn compact_cache(state: State<'_, Db>) -> Result<CompactReport, String> {
+    // 与 reset 不同：**一行都不删**，只把空洞还回去；设置页那颗「压缩缓存」就是它
+    tauri::async_runtime::block_on(state.compact()).map_err(|err| err.to_string())
+}
+
 /// Ask the OS for the e-book files / folders to import (the shelf's "＋" button).
 ///
 /// Returns the chosen absolute paths, or an empty list when the user cancelled.
@@ -483,6 +497,89 @@ mod desktop_picker {
             .filter_map(|path| path.into_path().ok())
             .map(|path| path.to_string_lossy().into_owned())
             .collect())
+    }
+
+    /// 弹一次「另存为」；取消回 `None`，成功回落地的绝对路径。
+    ///
+    /// 与 [`pick`] 一样：`blocking_*` 不能在主线程上调，所以这一次等待丢给临时线程。
+    pub fn pick_save(app: &tauri::AppHandle, default_name: &str) -> Result<Option<String>, String> {
+        let dialog = app
+            .dialog()
+            .file()
+            .set_title("导出笔记本")
+            .set_file_name(default_name);
+        let picked = std::thread::spawn(move || dialog.blocking_save_file())
+            .join()
+            .map_err(|_| "保存对话框所在的线程崩了".to_string())?;
+        Ok(picked
+            .and_then(|path| path.into_path().ok())
+            .map(|path| path.to_string_lossy().into_owned()))
+    }
+}
+
+/// 把一段文本存成文件 —— 笔记本页的「导出 md / 导出 txt」。
+///
+/// 先弹一次系统「另存为」（macOS 用 `NSSavePanel`，Windows / Linux 用
+/// `tauri-plugin-dialog` 的 `blocking_save_file`），用户取消就一个字都不写、回 `None`；
+/// 成功则写盘并回落地路径（界面拿它显示一句「已导出到 …」）。
+///
+/// 写盘放在前端？不行 —— Tauri 的 WebView 不放行 `Blob` 下载，`<a download>` 会静默失败；
+/// 而这条命令只有「问一句路径 + `std::fs::write`」两件事，比引一个插件小得多。
+#[tauri::command]
+fn save_text_file(
+    app: tauri::AppHandle,
+    default_name: String,
+    content: String,
+) -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    let picked = macos_saver::pick(app, &default_name)?;
+    #[cfg(not(target_os = "macos"))]
+    let picked = desktop_picker::pick_save(&app, &default_name)?;
+    match picked {
+        Some(path) => {
+            std::fs::write(&path, content.as_bytes()).map_err(|err| err.to_string())?;
+            Ok(Some(path))
+        }
+        None => Ok(None),
+    }
+}
+
+/// macOS 侧的「另存为」：`NSSavePanel`（与导入那个 `NSOpenPanel` 同一套办法）。
+#[cfg(target_os = "macos")]
+mod macos_saver {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSModalResponseOK, NSSavePanel};
+    use objc2_foundation::NSString;
+
+    /// Run the save panel on the main thread (it must live there) and return its answer.
+    pub fn pick(app: tauri::AppHandle, default_name: &str) -> Result<Option<String>, String> {
+        // 同步命令通常就在主线程上跑：那就直接弹；否则丢给主线程，再等结果回来
+        if MainThreadMarker::new().is_some() {
+            return run(default_name);
+        }
+        let name = default_name.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(run(&name));
+        })
+        .map_err(|err| err.to_string())?;
+        rx.recv().map_err(|err| err.to_string())?
+    }
+
+    /// Show the panel (main thread only) and return the chosen path.
+    fn run(default_name: &str) -> Result<Option<String>, String> {
+        let marker =
+            MainThreadMarker::new().ok_or_else(|| "not on the main thread".to_string())?;
+        let panel = NSSavePanel::savePanel(marker);
+        // 允许在面板里顺手新建一个文件夹；
+        panel.setCanCreateDirectories(true);
+        // 预填文件名（扩展名也带上，用户改不改都行 —— 这里不限制类型，与导入面板同一口径）
+        panel.setNameFieldStringValue(&NSString::from_str(default_name));
+        // 点 Cancel 回 None，调用方什么都不做
+        if panel.runModal() != NSModalResponseOK {
+            return Ok(None);
+        }
+        Ok(panel.URL().and_then(|url| url.path()).map(|path| path.to_string()))
     }
 }
 
@@ -833,6 +930,17 @@ fn archive_restore(
 /* 封面：本地封面图 + 「自动生成封面」方案的缓存                          */
 /* ------------------------------------------------------------------ */
 
+/// 一本 `app_data_dir/<name>/` 下的数据目录（封面、阅读背景……），不存在就建。
+fn app_data_subdir(app: &tauri::AppHandle, name: &str) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| err.to_string())?
+        .join(name);
+    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    Ok(dir)
+}
+
 /// 封面缓存目录：`app_data_dir/covers/`。
 ///
 /// 里面只有两类纯数据文件，随时可删：
@@ -840,13 +948,7 @@ fn archive_restore(
 /// * `<book_id>.json` —— 上次算出来的「自动生成封面」方案（配色下标 + 中央那两个字），
 ///   下次直接读回来，不必重算，也不会因为以后改了配色表而突然换色。
 fn covers_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| err.to_string())?
-        .join("covers");
-    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-    Ok(dir)
+    app_data_subdir(app, "covers")
 }
 
 /// 会被认成封面图的扩展名 → MIME。
@@ -969,9 +1071,254 @@ fn cover_save(app: tauri::AppHandle, book_id: String, spec: String) -> Result<()
     std::fs::write(dir.join(format!("{id}.json")), spec).map_err(|err| err.to_string())
 }
 
+/* ------------------------------------------------------------------ */
+/* 阅读背景图：从 gui_settings 里搬出来，单独存一个文件                   */
+/* ------------------------------------------------------------------ */
+
+/// 阅读背景放在 `app_data_dir/reader/background.<ext>`。
+///
+/// 为什么不继续塞 `gui_settings.reader.prefs`：那份 JSON 每次改字号、行距、主题
+/// 都要整段重写，图还在里面时每拖一下滑杆就要写 4~5 MB（WAL 跟着一起胖）。
+/// 拆成文件后，偏好只剩几百字节，图只在挑图 / 首次迁移时写一次。
+const BACKGROUND_EXTENSIONS: [(&str, &str); 4] = [
+    ("webp", "image/webp"),
+    ("png", "image/png"),
+    ("jpg", "image/jpeg"),
+    ("gif", "image/gif"),
+];
+
+/// 背景图解码后的上限：够放一张 4K 压过的照片，又不至于让前端把内存吃光。
+const BACKGROUND_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// data URL 里认识的图片 MIME → 落盘扩展名。
+fn background_extension(mime: &str) -> Option<&'static str> {
+    match mime {
+        "image/webp" => Some("webp"),
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        _ => None,
+    }
+}
+
+/// 把 `data:image/webp;base64,AAAA` 拆成 `(mime, 载荷)`。
+///
+/// 只认 base64 的 `data:` URL —— 前端 canvas 出来的就是这种；不是的话当作没有背景。
+fn split_image_data_url(value: &str) -> Option<(&str, &str)> {
+    let rest = value.trim().strip_prefix("data:")?;
+    let (meta, payload) = rest.split_once(',')?;
+    let mime = meta.strip_suffix(";base64")?;
+    if !mime.starts_with("image/") {
+        return None;
+    }
+    Some((mime, payload))
+}
+
+/// base64 表里的一个字符 → 6 位值。
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+/// 极简 base64 解码（[`base64`] 的逆运算）。
+///
+/// 只用于把前端传来的背景图写回磁盘；严格拒绝长度不对、非法字符和中间补位。
+fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() || bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    let groups = bytes.len() / 4;
+    for (index, chunk) in bytes.chunks(4).enumerate() {
+        let padding = chunk.iter().rev().take_while(|byte| **byte == b'=').count();
+        // 只有最后一组允许补位，且最多两位
+        if padding > 2 || (padding > 0 && index + 1 != groups) {
+            return None;
+        }
+        let mut packed = 0u32;
+        for (position, byte) in chunk.iter().enumerate() {
+            let value = if position >= 4 - padding {
+                0
+            } else {
+                base64_value(*byte)? as u32
+            };
+            packed = (packed << 6) | value;
+        }
+        out.push((packed >> 16) as u8);
+        if padding < 2 {
+            out.push((packed >> 8) as u8);
+        }
+        if padding < 1 {
+            out.push(packed as u8);
+        }
+    }
+    Some(out)
+}
+
+/// 把已经解码好的图片字节写进 `reader/background.<ext>`。
+///
+/// [`store_reader_background`] 与开机迁移共用这一段：迁移老数据时手头已经是原始字节，
+/// 不必再 base64 编一遍再解一遍。
+fn write_reader_background_bytes(
+    dir: &std::path::Path,
+    bytes: &[u8],
+    extension: &str,
+) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Err("background image is empty".to_string());
+    }
+    if bytes.len() > BACKGROUND_MAX_BYTES {
+        return Err("background image is too large".to_string());
+    }
+    std::fs::create_dir_all(dir).map_err(|err| err.to_string())?;
+    // 先把旧图（可能是别的扩展名）删掉：读的时候按扩展名找，留着旧的那张就会被读到
+    clear_reader_background(dir);
+    let target = dir.join(format!("background.{extension}"));
+    // 先写临时文件再改名：中途崩了最多丢背景，不会留半张图给下一次启动
+    let temporary = dir.join("background.tmp");
+    std::fs::write(&temporary, bytes).map_err(|err| err.to_string())?;
+    std::fs::rename(&temporary, &target).map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+/// 把一张 data URL 背景图写进 `reader/background.<ext>`，顺手清掉旧格式的那张。
+fn store_reader_background(dir: &std::path::Path, value: &str) -> Result<(), String> {
+    let (mime, payload) = split_image_data_url(value)
+        .ok_or_else(|| "background must be a base64 image data URL".to_string())?;
+    let extension =
+        background_extension(mime).ok_or_else(|| "unsupported background image type".to_string())?;
+    let bytes = base64_decode(payload).ok_or_else(|| "background is not valid base64".to_string())?;
+    write_reader_background_bytes(dir, &bytes, extension)
+}
+
+/// 读回背景图，编码成前端直接能用的 `data:` URL；没有（或坏得读不出）就是 `None`。
+fn load_reader_background(dir: &std::path::Path) -> Option<String> {
+    for (extension, mime) in BACKGROUND_EXTENSIONS {
+        let path = dir.join(format!("background.{extension}"));
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        // 超过上限的图当作没设置：宁可少一张背景，也别让 webview 拼一个几十 MB 的字符串
+        if bytes.is_empty() || bytes.len() > BACKGROUND_MAX_BYTES {
+            continue;
+        }
+        return Some(format!("data:{mime};base64,{}", base64(&bytes)));
+    }
+    None
+}
+
+/// 删掉所有格式的背景图（`None` = 用户按了"不用背景图"）。
+fn clear_reader_background(dir: &std::path::Path) {
+    for (extension, _) in BACKGROUND_EXTENSIONS {
+        let _ = std::fs::remove_file(dir.join(format!("background.{extension}")));
+    }
+    let _ = std::fs::remove_file(dir.join("background.tmp"));
+}
+
+/// 读当前阅读背景（图片的 data URL；没设过就是 `None`）。
+#[tauri::command]
+fn reader_background(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let dir = app_data_subdir(&app, "reader")?;
+    Ok(load_reader_background(&dir))
+}
+
+/// 保存 / 清除阅读背景。`data` 为 `None`（或空串）就删掉磁盘上那张图。
+#[tauri::command]
+fn set_reader_background(app: tauri::AppHandle, data: Option<String>) -> Result<(), String> {
+    let dir = app_data_subdir(&app, "reader")?;
+    match data {
+        Some(value) if !value.trim().is_empty() => store_reader_background(&dir, &value),
+        _ => {
+            clear_reader_background(&dir);
+            Ok(())
+        }
+    }
+}
+
+/// 前端 `readerPrefs.ts` 里的同一个键：阅读偏好存在 `gui_settings` 的这一行。
+const READER_PREFS_KEY: &str = "reader.prefs";
+
+/// 从老版偏好 JSON 里取出背景图，并给出「去掉 `bgImage` 之后」的 JSON。
+///
+/// 返回 `None` 的三种情况都表示**不要动它**：不是 JSON、没有 `bgImage` 这个键、
+/// 或者那张图不是能认的 base64 图片（别为了省几 MB 把用户的图弄丢）。
+/// 图是空串（老版本「没设背景」的默认值）时只返回删掉键的 JSON，`image` 为 `None`。
+fn take_legacy_background(raw: &str) -> Option<(Option<(Vec<u8>, &'static str)>, String)> {
+    let mut prefs: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let value = prefs.get("bgImage")?.clone();
+    let image = match value.as_str() {
+        None | Some("") => None,
+        Some(data) => {
+            let (mime, payload) = split_image_data_url(data)?;
+            let extension = background_extension(mime)?;
+            let bytes = base64_decode(payload)?;
+            Some((bytes, extension))
+        }
+    };
+    prefs.as_object_mut()?.remove("bgImage");
+    let stripped = serde_json::to_string(&prefs).ok()?;
+    Some((image, stripped))
+}
+
+/// 把老版本塞在 `reader.prefs` 里的那张背景图搬到 `reader/background.*`。
+///
+/// 以前整张图（base64，几 MB）都在偏好 JSON 里，每改一次字号就要重写一遍；现在
+/// 偏好只留排版，图单独成文件。开机时搬一次，然后压一次库把腾出来的页还给磁盘。
+///
+/// 失败只返回 `Err` 给调用方丢掉：图还在 JSON 里，下次开书时前端会再试一次迁移，
+/// 不能因为一张图没搬成就不让应用启动。
+async fn migrate_reader_background(app: &tauri::AppHandle, db: &Db) -> Result<(), String> {
+    let Some(raw) = db
+        .get_setting(READER_PREFS_KEY)
+        .await
+        .map_err(|err| err.to_string())?
+    else {
+        return Ok(());
+    };
+    let Some((image, stripped)) = take_legacy_background(&raw) else {
+        // 没有这个键 / 不是 JSON / 图认不出：一个字都不改
+        return Ok(());
+    };
+    let had_image = image.is_some();
+    if let Some((bytes, extension)) = image {
+        let dir = app_data_subdir(app, "reader")?;
+        write_reader_background_bytes(&dir, &bytes, extension)?;
+    }
+    db.set_setting(READER_PREFS_KEY, &stripped)
+        .await
+        .map_err(|err| err.to_string())?;
+    if had_image {
+        // 几 MB 刚从 JSON 里离开：别等下次启动的「空洞够多」判定，现在就收回去
+        let _ = db.compact().await;
+    }
+    Ok(())
+}
+
+/// 测试用的小工具：每个用例一个独立临时目录，互不打扰。
+#[cfg(test)]
+mod tests_support {
+    pub fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("paget-{name}-{}", std::process::id()));
+        // 同名用例重跑时先把上一轮留下的清掉
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+}
+
 #[cfg(test)]
 mod cover_tests {
-    use super::{base64, find_cover, safe_book_id};
+    use super::{
+        base64, base64_decode, clear_reader_background, find_cover, load_reader_background,
+        safe_book_id, store_reader_background, take_legacy_background,
+    };
 
     /// RFC 4648 的测试向量 —— 手写的 base64 必须一位不差，
     /// 否则封面图（data URL）会显示成一片空白。
@@ -988,6 +1335,110 @@ mod cover_tests {
         ];
         for (input, expected) in cases {
             assert_eq!(base64(input.as_bytes()), expected, "input = {input:?}");
+        }
+    }
+    /// 背景图的 base64 解码必须和编码对得上；坏输入宁可报错，别写出半张图。
+    #[test]
+    fn base64_decode_round_trips_and_rejects_junk() {
+        let raw = [0u8, 1, 2, 255, 254];
+        for payload in [
+            b"f".as_slice(),
+            b"fo".as_slice(),
+            b"foo".as_slice(),
+            b"foobar".as_slice(),
+            raw.as_slice(),
+        ] {
+            let encoded = base64(payload);
+            assert_eq!(
+                base64_decode(&encoded).as_deref(),
+                Some(payload),
+                "encoded = {encoded:?}"
+            );
+        }
+        for bad in ["A", "AAAAA", "A===", "!!!!", "=AAA", "AA A"] {
+            assert!(base64_decode(bad).is_none(), "不该解出东西: {bad:?}");
+        }
+    }
+
+    /// 背景图落盘成一张真正的文件，读回来还是同一个 data URL；换格式时旧图要清掉。
+    #[test]
+    fn background_is_stored_as_a_file_and_loaded_back() {
+        let dir = super::tests_support::temp_dir("background-store");
+        assert!(load_reader_background(&dir).is_none());
+
+        let png = format!("data:image/png;base64,{}", base64(b"pretend png bytes"));
+        store_reader_background(&dir, &png).expect("store png");
+        assert!(dir.join("background.png").is_file());
+        assert_eq!(load_reader_background(&dir).as_deref(), Some(png.as_str()));
+
+        // 换成 webp：旧 png 必须先删，否则读回来还是上一张
+        let webp = format!("data:image/webp;base64,{}", base64(b"pretend webp bytes"));
+        store_reader_background(&dir, &webp).expect("store webp");
+        assert!(!dir.join("background.png").exists());
+        assert!(dir.join("background.webp").is_file());
+        assert_eq!(load_reader_background(&dir).as_deref(), Some(webp.as_str()));
+
+        // 写失败不该把已有背景弄丢（先校验，再动旧文件）
+        assert!(store_reader_background(&dir, "data:text/plain;base64,QQ==").is_err());
+        assert_eq!(load_reader_background(&dir).as_deref(), Some(webp.as_str()));
+
+        clear_reader_background(&dir);
+        assert!(load_reader_background(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 只认图片的 base64 data URL；别把 svg / 普通文本当背景写进磁盘。
+    #[test]
+    fn background_rejects_non_image_data_urls() {
+        let dir = super::tests_support::temp_dir("background-reject");
+        for bad in [
+            "hello",
+            "data:text/plain;base64,QQ==",
+            "data:image/svg+xml;base64,QQ==",
+            "data:image/png,QQ==",
+        ] {
+            assert!(
+                store_reader_background(&dir, bad).is_err(),
+                "不该接受: {bad:?}"
+            );
+        }
+        assert!(load_reader_background(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 老偏好里的图要能原样取出来，其余排版项一个不少；JSON 里不再留 `bgImage`。
+    #[test]
+    fn legacy_background_is_taken_out_of_the_prefs_json() {
+        let image = format!("data:image/png;base64,{}", base64(b"legacy bytes"));
+        let raw = format!(r#"{{"fontSize":42,"bgImage":"{image}","bgFill":"cover"}}"#);
+        let (extracted, stripped) =
+            take_legacy_background(&raw).expect("老数据里应该能取出来");
+        let (bytes, extension) = extracted.expect("图应该解出来了");
+        assert_eq!(bytes, b"legacy bytes");
+        assert_eq!(extension, "png");
+        // 排版项都在，只有图被拿走了
+        let parsed: serde_json::Value = serde_json::from_str(&stripped).unwrap();
+        assert_eq!(parsed["fontSize"], 42);
+        assert_eq!(parsed["bgFill"], "cover");
+        assert!(parsed.get("bgImage").is_none());
+
+        // 空串（老版本的「没设背景」）只清键，不该报错
+        let (empty, stripped) =
+            take_legacy_background(r#"{"fontSize":30,"bgImage":""}"#).expect("应当能清掉空键");
+        assert!(empty.is_none());
+        assert!(!stripped.contains("bgImage"));
+
+        // 认不出 / 不该动的：原样返回 None，调用方一个字都不改
+        for untouched in [
+            "not json",
+            r#"{"fontSize":30}"#,
+            r#"{"fontSize":30,"bgImage":"hello"}"#,
+            r#"{"fontSize":30,"bgImage":"data:text/plain;base64,QQ=="}"#,
+        ] {
+            assert!(
+                take_legacy_background(untouched).is_none(),
+                "不该动: {untouched:?}"
+            );
         }
     }
 
@@ -1262,6 +1713,9 @@ pub fn run() {
             let path = app.path().app_config_dir()?.join("cache.sqlite3");
             // setup 是同步的：只在启动时阻塞这一次，把库建好
             let cache = tauri::async_runtime::block_on(Db::open(&path))?;
+            // 老版本的阅读背景图混在 `gui_settings.reader.prefs` 里：开机搬进独立文件，
+            // 顺便把空出来的几 MB 还给磁盘（失败不挡启动，见函数注释）
+            let _ = tauri::async_runtime::block_on(migrate_reader_background(app.handle(), &cache));
             app.manage(cache);
             // 内核是"按需启动"的（第一次调用时才拉起来），所以这里只是准备好状态；
             // 资源目录传进去，打包后的应用才找得到随包的那份冻结点内核
@@ -1281,8 +1735,13 @@ pub fn run() {
             get_gui_setting,
             set_gui_setting,
             reset_cache,
+            cache_storage,
+            compact_cache,
+            reader_background,
+            set_reader_background,
             pick_import_paths,
             import_picker_modes,
+            save_text_file,
             cover_info,
             cover_save,
             book_source,

@@ -30,6 +30,7 @@ import {
   type ImportPickMode,
 } from "../lib/core";
 import { generatedCover, parseCoverSpec, type CoverSpec } from "../lib/coverGenerator";
+import { loadAnnotations } from "../lib/annotations";
 import { expiredBooks, localDay, readDeadlines, writeDeadlines } from "../lib/deadlines";
 import { AMBIENT_TRACKS, type AmbientState, type AmbientTrackId } from "../lib/ambient";
 import { coreStamp } from "../lib/format";
@@ -512,6 +513,8 @@ export default function Shelf(props: {
   onOpenStats: () => void;
   onOpenAchievements: () => void;
   onOpenDesk: () => void;
+  /** 书架上那本笔记本：所有书的划线 + 批注，按书分组摊开（见 `views/Notebook.tsx`） */
+  onOpenNotebook?: () => void;
   /**
    * 沉浸模式：书、统计 / 成就 / 设置、导入与右上角那些小圆钮全部停用，
    * **只留管理模式**（锤子 / `M`）能整理书架。
@@ -571,6 +574,20 @@ export default function Shelf(props: {
   const [flight, setFlight] = useState<{ books: BookRow[]; origin: SpineRect } | null>(null);
   // 「导入后放不放飞行动画」：本机界面偏好（与「动态书脊厚度」同一套，进设置页改）
   const [importFlight, setImportFlight] = useState(true);
+  // 笔记本里现有几条划线：架子上的册子要写这个数，也要据此给「多出来的那一格」留宽度。
+  // 每次回书房都会重新挂载一次（阅读页 / 挂件页时书房是卸掉的），所以这里读一次就够新。
+  const [notebookMarks, setNotebookMarks] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    loadAnnotations()
+      .then((list) => {
+        if (alive) setNotebookMarks(list.length);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // 管理模式：开关 + 布局（书的先后，存本机 gui_settings）、正在拖的书、落点、翻屏动画
   // （初值从 props 来：从挂件页按 M 回到书房时，一进来就在管理模式里；只有挂载那一次读）
@@ -1272,12 +1289,15 @@ export default function Shelf(props: {
   const pages = useMemo(() => {
     const root = rackSize.root > 0 ? rackSize.root : 16;
     const width = rackSize.width > 0 ? rackSize.width : ASSUMED_ROW_REM * root;
+    // 主屏第一排头里坐着两只「不是书」的格子：藤条篮子（导入）与本子（笔记本）。
+    // 它们不在 `spineWidths` 里，打包时得按同样的厚度 + 缝让出来，不然书会挤出木板。
+    const extras = (SPINE_MIN_REM * 2 + SPINE_GAP_REM * 2) * root;
     return planShelfPages(
       packShelfRows(
         spineWidths.map((rem) => rem * root),
         width,
         SPINE_GAP_REM * root,
-        SPINE_MIN_REM * root,
+        extras,
       ),
     );
   }, [spineWidths, rackSize]);
@@ -2235,6 +2255,53 @@ export default function Shelf(props: {
                   {/* 这行小字平时藏着，鼠标移上去（或正在导入）才浮出来 —— 它其实是个按钮 */}
                   <span className="add-hint" aria-hidden="true">
                     {props.immersive ? "沉浸中不可导入" : importing ? "导入中…" : "导入电子书"}
+                  </span>
+                </button>
+              </li>
+            ) : null}
+            {/* 笔记本：只摆主屏第一排（篮子旁边）。它不是书，不进内核的 list ——
+                点开是 `views/Notebook.tsx`，所有书的划线 + 批注按书摊开。
+                封面上的数字是「几条划线」，每次回书房重新读一次（见上面的 `notebookMarks`） */}
+            {index === 0 && current === 0 ? (
+              <li
+                className="spine-card notebook-slot"
+                style={{ "--spine-w": `${SPINE_MIN_REM}rem` } as CSSProperties}
+              >
+                <button
+                  type="button"
+                  className="notebook-book"
+                  title={
+                    props.immersive
+                      ? "沉浸模式：笔记本先收起来（只留整理书架）"
+                      : `笔记本：${notebookMarks} 条划线 / 批注`
+                  }
+                  aria-label={
+                    props.immersive
+                      ? "沉浸模式不能打开笔记本"
+                      : `打开笔记本（${notebookMarks} 条划线）`
+                  }
+                  onClick={() => {
+                    if (props.immersive) return;
+                    props.onOpenNotebook?.();
+                  }}
+                  disabled={props.immersive}
+                >
+                  {/* 一本摊在架子上的册子：牛皮纸封面 + 左侧线圈 + 一张斜贴的标签。
+                      全是 CSS 画的（见 notebook.css），不用图片 */}
+                  <span className="nb-art" aria-hidden="true">
+                    <span className="nb-rings" />
+                    <span className="nb-cover">
+                      <span className="nb-strap" />
+                      <span className="nb-label">
+                        <span className="nb-label-text">笔记本</span>
+                        <span className="nb-label-count">
+                          {notebookMarks > 0 ? `${notebookMarks} 条` : "空白"}
+                        </span>
+                      </span>
+                    </span>
+                  </span>
+                  <span className="notebook-hint" aria-hidden="true">
+                    {props.immersive ? "沉浸中不可翻" : "翻开笔记本"}
                   </span>
                 </button>
               </li>

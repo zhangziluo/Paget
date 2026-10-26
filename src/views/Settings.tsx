@@ -2,7 +2,17 @@ import { useCallback, useEffect, useState } from "react";
 
 import { CoreItem, Item, Switch, kindOf, toDraft, type Row } from "../components/CoreSetting";
 import { AMBIENT_SETTING_PATH, type AmbientState } from "../lib/ambient";
-import { configGet, configSet, corePaths, getGuiSetting, setGuiSetting } from "../lib/core";
+import {
+  cacheStorage,
+  compactCache,
+  configGet,
+  configSet,
+  corePaths,
+  getGuiSetting,
+  setGuiSetting,
+  type CacheStorage,
+} from "../lib/core";
+import { humanBytes } from "../lib/format";
 import { IMPORT_FLIGHT_KEY, normalizeImportFlight } from "../lib/importFlight";
 import { partitionSettings } from "../lib/readerConfig";
 import { normalizeSpineMode, SPINE_MODE_KEY } from "../lib/shelfLayout";
@@ -51,6 +61,45 @@ export default function Settings({
   const [spineDynamic, setSpineDynamic] = useState(true);
   // 同一个地方（gui_settings）还存着一个开关：导入后放不放「书从篮子飞上架」那一段动画
   const [importFlight, setImportFlight] = useState(true);
+  // 本机缓存（书目 / 全文索引 / 阅读位置的副本）：体积与压缩状态
+  const [cache, setCache] = useState<CacheStorage | null>(null);
+  const [cacheBusy, setCacheBusy] = useState(false);
+  const [cacheNotice, setCacheNotice] = useState("");
+
+  /** 读一次缓存体积；读不到（旧内核 / 库还没建）就不显示这一块。 */
+  const loadCache = useCallback(async () => {
+    try {
+      setCache(await cacheStorage());
+    } catch {
+      setCache(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadCache();
+  }, [loadCache]);
+
+  /** 压一次缓存：一行数据都不删，只把删书 / 重建索引留下的空洞还给磁盘。 */
+  async function compactNow() {
+    if (cacheBusy) return;
+    setCacheBusy(true);
+    setCacheNotice("");
+    try {
+      const report = await compactCache();
+      setCache(report.after);
+      const before = report.before.db_bytes + report.before.wal_bytes;
+      const after = report.after.db_bytes + report.after.wal_bytes;
+      setCacheNotice(
+        before > after
+          ? `收回了 ${humanBytes(before - after)}，缓存现在是 ${humanBytes(after)}。`
+          : "已经很紧凑了，没有可回收的空间。",
+      );
+    } catch (err) {
+      setCacheNotice(`压缩失败：${String(err)}`);
+    } finally {
+      setCacheBusy(false);
+    }
+  }
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -184,6 +233,9 @@ export default function Settings({
       draft={draft}
       spineDynamic={spineDynamic}
       importFlight={importFlight}
+      cache={cache}
+      cacheBusy={cacheBusy}
+      cacheNotice={cacheNotice}
       hasReaderPanel={hasReaderPanel}
       ambient={ambient}
       busy={busy}
@@ -199,7 +251,11 @@ export default function Settings({
       }}
       onSpine={(dynamic) => void chooseSpine(dynamic)}
       onImportFlight={(on) => void chooseImportFlight(on)}
-      onRefresh={() => void load()}
+      onCompactCache={() => void compactNow()}
+      onRefresh={() => {
+        void load();
+        void loadCache();
+      }}
     />
   );
 
@@ -230,6 +286,12 @@ export function SettingsSheet(props: {
   /** 界面自己的两个偏好（存本机） */
   spineDynamic: boolean;
   importFlight: boolean;
+  /** 本机缓存体积（读不到就是 null：这一块整块不显示） */
+  cache?: CacheStorage | null;
+  cacheBusy?: boolean;
+  cacheNotice?: string;
+  /** 压缩缓存（VACUUM + FTS optimize + 截断 WAL），一行数据都不删 */
+  onCompactCache?: () => void;
   /** 阅读页顶栏那块「阅读设置」里有没有东西（有才留那句交代） */
   hasReaderPanel: boolean;
   /**
@@ -320,6 +382,50 @@ export function SettingsSheet(props: {
               </li>
             ))}
           </ul>
+        </section>
+      ) : null}
+
+      {/* 本机缓存：书目 / 全文索引 / 阅读位置的一份副本，删了能从书库重建。
+          删书或重建索引之后，SQLite 只在文件里留空洞、不会自己缩；这里给出可收回的
+          空间，并提供一次 VACUUM（不删任何数据） */}
+      {props.cache ? (
+        <section className="set-block">
+          <h3>本机缓存</h3>
+          <p className="set-block-lead">
+            书目、全文搜索和阅读位置在本机留了一份副本 —— 删掉也能从书库重建，书本身一个字节不动。
+            删书 / 重建索引之后文件里会留下空洞，压一压就能把这块盘还回去。
+          </p>
+          <ul className="set-paths">
+            <li>
+              <span className="set-paths-name">缓存文件</span>
+              <span className="set-paths-value">
+                {humanBytes(props.cache.db_bytes + props.cache.wal_bytes)}
+                {props.cache.wal_bytes > 0
+                  ? `（其中还没并回去的日志 ${humanBytes(props.cache.wal_bytes)}）`
+                  : ""}
+              </span>
+            </li>
+            <li>
+              <span className="set-paths-name">可以收回</span>
+              <span className="set-paths-value">{humanBytes(props.cache.free_bytes)}</span>
+            </li>
+            <li>
+              <span className="set-paths-name">里面有什么</span>
+              <span className="set-paths-value">
+                {props.cache.books} 本书 · {props.cache.chunks.toLocaleString("zh-CN")} 块正文索引
+              </span>
+            </li>
+          </ul>
+          <div className="set-tools set-tools-inline">
+            <button
+              type="button"
+              onClick={props.onCompactCache}
+              disabled={props.cacheBusy}
+            >
+              {props.cacheBusy ? "正在压缩…" : "压缩缓存"}
+            </button>
+          </div>
+          {props.cacheNotice ? <p className="set-hint">{props.cacheNotice}</p> : null}
         </section>
       ) : null}
 

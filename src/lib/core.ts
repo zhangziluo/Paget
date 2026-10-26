@@ -130,6 +130,52 @@ export function resetCache(): Promise<void> {
   return invoke<void>("reset_cache");
 }
 
+/**
+ * 本机缓存现在占多少盘。
+ *
+ * `free_bytes` 是库文件里**已经空出来、但还没还给磁盘**的部分 —— 删过书或重建过
+ * 全文索引之后它会变大，按一下「压缩缓存」就能收回来。`wal_bytes` 是还没并回主库的
+ * 日志（正常很小；上次异常退出时可能接近主库大小）。
+ */
+export type CacheStorage = {
+  db_bytes: number;
+  wal_bytes: number;
+  free_bytes: number;
+  books: number;
+  chunks: number;
+};
+
+/** 一次压缩前后的对照（界面拿它说「收回了多少」）。 */
+export type CacheCompactReport = {
+  before: CacheStorage;
+  after: CacheStorage;
+};
+
+/** 读缓存体积。纯读，随时可调。 */
+export function cacheStorage(): Promise<CacheStorage> {
+  return invoke<CacheStorage>("cache_storage");
+}
+
+/** 压缩缓存（合并全文索引 + VACUUM + 截断 WAL）；一行数据都不删。 */
+export function compactCache(): Promise<CacheCompactReport> {
+  return invoke<CacheCompactReport>("compact_cache");
+}
+
+/**
+ * 阅读背景图（`data:image/...;base64,...`；没设过就是 `null`）。
+ *
+ * 它不再存在 `gui_settings.reader.prefs` 里：那份 JSON 每次改字号都要整段重写，
+ * 图跟着它走会让一次滑杆拖动就写几 MB。现在单独落在应用数据目录的一张文件里。
+ */
+export function readerBackground(): Promise<string | null> {
+  return invoke<string | null>("reader_background");
+}
+
+/** 保存 / 清除阅读背景图；`null` = 删掉磁盘上那张。 */
+export function setReaderBackground(data: string | null): Promise<void> {
+  return invoke<void>("set_reader_background", { data });
+}
+
 /** A slice of a book's text, split exactly like the terminal reader splits it. */
 export function bookText(
   bookId: string,
@@ -360,6 +406,19 @@ export function pickImportPaths(mode: ImportPickMode = "files"): Promise<string[
  */
 export function importPickerModes(): Promise<string[]> {
   return invoke<string[]>("import_picker_modes");
+}
+
+/**
+ * 把一段文本存成文件（笔记本页的「导出 md / 导出 txt」）。
+ *
+ * Rust 侧先弹一次系统「另存为」（macOS 是 `NSSavePanel`），用户取消就回 `null`、
+ * 一个字节都不写；成功则回落地路径。写盘不进 WebView —— Tauri 不放行 `Blob` 下载。
+ *
+ * @param defaultName 面板里预填的文件名（含扩展名，如 `笔记本.md`）
+ * @param content 要写的完整文本
+ */
+export function saveTextFile(defaultName: string, content: string): Promise<string | null> {
+  return invoke<string | null>("save_text_file", { defaultName, content });
 }
 
 /** Drop one book from the library, together with its converted text file. */

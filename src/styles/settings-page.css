@@ -459,6 +459,20 @@
   word-break: break-all;
 }
 
+/* 「本机缓存」那一块：按钮跟在清单底下，不跟标题抢右边 */
+.set-tools-inline {
+  margin-left: 0;
+  margin-top: 0.65rem;
+}
+
+/* 压缩回执：一行小字，像页边记的「收回了多少」 */
+.set-hint {
+  margin: 0.45rem 0 0;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  opacity: 0.72;
+}
+
 /* ---------------- 页脚与空状态 ---------------- */
 
 /* 页脚：一句人话交代"这些写进哪儿" */

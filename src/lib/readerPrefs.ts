@@ -1,6 +1,6 @@
 /**
  * 阅读页的排版与配色偏好：正文字号 / 字重 / 字距 / 行距 / 段间距、页内边距，
- * 纸面主题（四套预设 + 白天黑夜 + 自定义背景 / 字色），
+ * 纸面主题（四套预设 + 白天黑夜 + 自定义底色 / 字色 + 自定义背景图），
  * 以及**光点导读那几样（光点 / 下划线 / 波浪线）的颜色**。
  *
  * 这些**不是**内核的数据 —— 内核不认识字号、字距与纸面配色 —— 所以和置顶 / 限时一样，
@@ -9,7 +9,14 @@
  *     {"fontSize":20,"fontWeight":400,"letterSpacing":0,"lineHeight":1.95,"paraSpacing":0,
  *      "marginX":28,"marginTop":21,"marginBottom":35,"linkY":false,"font":"system",
  *      "theme":"parchment","dark":false,"customBg":"","customFg":"",
+ *      "bgFill":"cover","bgFade":0,
  *      "guideDotColor":"","guideLineColor":"","guideWaveColor":""}
+ *
+ * `bgImage` 只在运行时出现：它是界面挑的那张 `data:image/...;base64,...`（挑图时先压到
+ * 长边 2000px），空串 = 不铺背景图；它垫在纸色之上、正文之下，右侧书口与桌面不跟着变。
+ * **它不进这段 JSON** —— 图由 Rust 单独存成 `reader/background.*`，开书时读回再填进这个
+ * 字段。JSON 里只留摆放方式（`bgFill`）与淡化程度（`bgFade`）；否则拖一次字号滑杆就要把
+ * 几 MB 的 base64 重写一遍，WAL 也跟着一起胖。
  *
  * 这里只放范围常量、调色板、归一化（纯函数）与两行读写；界面在 `views/Reader.tsx`，
  * 把结果直接当行内样式贴到 `.reader-lines`（含 `--reader-para-gap` 与光点导读那几个颜色变量）
@@ -60,6 +67,16 @@ export const READER_THEMES: { id: ReaderTheme; label: string; hint: string }[] =
   { id: "green", label: "护眼绿", hint: "豆沙绿，长时间阅读不刺眼" },
   { id: "space", label: "深空蓝", hint: "冷蓝，夜里读着安静" },
   { id: "code", label: "代码", hint: "深蓝底白字（#00008b / #ffffff），像代码编辑器；亮暗同色" },
+];
+
+/** 自定义背景图的摆放方式（对应 CSS 的 `background-size` / `background-repeat`）。 */
+export type ReaderBgFill = "cover" | "repeat" | "contain";
+
+/** 背景图摆放的选项（顺序 = 面板里的排列顺序）。 */
+export const READER_BG_FILLS: { id: ReaderBgFill; label: string; hint: string }[] = [
+  { id: "cover", label: "铺满", hint: "放大铺满整张纸，多出来的部分裁掉" },
+  { id: "repeat", label: "平铺", hint: "按图片原尺寸一块块铺开（适合小纹理）" },
+  { id: "contain", label: "适应", hint: "整张图完整放进来，空出的地方露出纸色" },
 ];
 
 /** 正文字体。 */
@@ -248,6 +265,20 @@ export type ReaderPrefs = {
   /** 自定义字色（`#rrggbb`）；空串 = 跟随预设主题 */
   customFg: string;
   /**
+   * 自定义背景图（`data:image/...;base64,...`）；空串 = 不铺背景图。
+   *
+   * 运行时用，**不写进 `gui_settings`**：图片单独存 `app_data_dir/reader/background.*`，
+   * 开书时由 `loadReaderPrefs` + `readerBackground()` 填进来（见文件头）。
+   *
+   * 它垫在纸色之上、正文之下（见 `App.css` 的 `.reader-page.has-bg`）——
+   * 只是「这张纸的花纹」，不影响书口、桌面与面板。
+   */
+  bgImage: string;
+  /** 背景图的摆放方式：铺满 / 平铺 / 适应 */
+  bgFill: ReaderBgFill;
+  /** 背景图的淡化程度（0~100）：往图上盖一层纸色，越大字越清楚 */
+  bgFade: number;
+  /**
    * 自定义**光点**色（`#rrggbb`，那一颗贴着字底走的小球）；空串 = 出厂那颗琥珀
    * （`DEFAULT_GUIDE_DOT`）。高光 / 暗边 / 光晕都由它派生（见 `guideColorVars`）。
    */
@@ -287,6 +318,9 @@ export const DEFAULT_READER_PREFS: ReaderPrefs = {
   dark: false,
   customBg: "",
   customFg: "",
+  bgImage: "",
+  bgFill: "cover",
+  bgFade: 0,
   guideDotColor: "",
   guideLineColor: "",
   guideWaveColor: "",
@@ -366,6 +400,25 @@ export function normalizeHexColor(value: unknown): string {
   return `#${rgb.map((part) => part.toString(16).padStart(2, "0")).join("")}`;
 }
 
+/**
+ * 背景图只认 `data:image/...;base64,` 长串；坏数据 / 超长一律当作没有。
+ *
+ * 这个字段现在只用于**读回老数据**（图单独存文件，见文件头）；新数据在
+ * `saveReaderPrefs` 里就被剔掉了。
+ */
+function normalizeBgImage(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("data:image/") || !trimmed.includes(";base64,")) return "";
+  // 老版本压到长边 2400px，正常远小于这个上限；超了只可能是坏数据
+  return trimmed.length > 16 * 1024 * 1024 ? "" : trimmed;
+}
+
+/** 摆放方式只认那三样；没存过 / 存坏了都回落「铺满」。 */
+function normalizeBgFill(value: unknown): ReaderBgFill {
+  return value === "repeat" || value === "contain" ? value : "cover";
+}
+
 /** 按比例把 *from* 混向 *to*（0 = 全是 from，1 = 全是 to）。 */
 function mixHex(from: string, to: string, amount: number): string {
   const a = parseHex(from) ?? [0, 0, 0];
@@ -374,8 +427,8 @@ function mixHex(from: string, to: string, amount: number): string {
   return `#${mixed.map((part) => part.toString(16).padStart(2, "0")).join("")}`;
 }
 
-/** 把一个颜色串转成带透明度的 `rgba(...)`（纸面的光与书脊的暗都要半透明）。 */
-function hexToRgba(value: string, alpha: number): string {
+/** 把一个颜色串转成带透明度的 `rgba(...)`（纸面的光、书脊的暗与背景图的淡化都要半透明）。 */
+export function hexToRgba(value: string, alpha: number): string {
   const rgb = parseHex(value) ?? [0, 0, 0];
   return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha})`;
 }
@@ -532,6 +585,9 @@ export function normalizeReaderPrefs(input: Partial<ReaderPrefs>): ReaderPrefs {
     dark: Boolean(merged.dark),
     customBg: normalizeHexColor(merged.customBg),
     customFg: normalizeHexColor(merged.customFg),
+    bgImage: normalizeBgImage(merged.bgImage),
+    bgFill: normalizeBgFill(merged.bgFill),
+    bgFade: clamp(merged.bgFade, 0, 100),
     guideDotColor: normalizeHexColor(merged.guideDotColor),
     guideLineColor: normalizeHexColor(merged.guideLineColor),
     guideWaveColor: normalizeHexColor(merged.guideWaveColor),
@@ -554,7 +610,14 @@ export async function loadReaderPrefs(): Promise<ReaderPrefs> {
   }
 }
 
-/** 写回排版偏好（调用方保证已经是归一化过的值）。 */
+/**
+ * 写回排版偏好（调用方保证已经是归一化过的值）。
+ *
+ * `bgImage` 有意剔掉：图单独存文件（见文件头）。这条写入在拖滑杆时每 400ms
+ * 就会跑一次，留着几 MB 的 base64 会把 WAL 一起喂胖。
+ */
 export async function saveReaderPrefs(prefs: ReaderPrefs): Promise<void> {
-  await setGuiSetting(READER_PREFS_KEY, JSON.stringify(prefs));
+  const stored: Partial<ReaderPrefs> = { ...prefs };
+  delete stored.bgImage;
+  await setGuiSetting(READER_PREFS_KEY, JSON.stringify(stored));
 }

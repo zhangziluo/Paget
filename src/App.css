@@ -24,6 +24,7 @@
 @import "./styles/auto-turn.css";
 @import "./styles/reader-config.css";
 @import "./styles/reader-search.css";
+@import "./styles/notebook.css";
 
 :root {
   color-scheme: light;
@@ -994,6 +995,24 @@ progress::-webkit-progress-value {
   width: min(23rem, 86vw);
 }
 
+/* 手势面板：六行「区域 → 动作」，右边是原生下拉框（用系统菜单，窄窗口也不会把面板挤爆） */
+.reader-prefs.reader-tap {
+  width: min(21rem, 86vw);
+}
+
+.reader-tap-row .pref-label {
+  flex-basis: 4.4rem;
+}
+
+.reader-tap-row select {
+  flex: 1;
+  min-width: 0;
+  /* 与旁边的数字输入框同一个高度手感；字号跟着名字列走（0.85rem），别显得特别小 */
+  padding: 0.24rem 0.35rem;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
 .reader-prefs .pref-themes button,
 .reader-prefs .pref-scheme button {
   padding: 0.22rem 0.6rem;
@@ -1145,6 +1164,20 @@ progress::-webkit-progress-value {
     rgba(255, 255, 255, 0) 22%
   );
   box-shadow: 0 2px 5px rgba(30, 18, 8, 0.2);
+}
+
+/* 自定义背景图：图片垫在最底下，上面盖一层「淡化」（纸色半透明），最上面仍是
+   原来那道很淡的纸面光 —— 正文永远压在这三层之上。摆放方式 / 是否平铺由行内变量给
+   （见 `Reader.tsx` 的 `bgVars`），所以只有「有图」时才挂这个类。
+   图片只铺在这张纸上：右侧书口（`.book-stack`）与桌面不跟着变。 */
+.reader-page.has-bg {
+  background-image:
+    linear-gradient(100deg, var(--reader-sheen), rgba(255, 255, 255, 0) 22%),
+    linear-gradient(var(--reader-bg-veil), var(--reader-bg-veil)),
+    var(--reader-bg-image);
+  background-size: auto, auto, var(--reader-bg-size);
+  background-repeat: no-repeat, no-repeat, var(--reader-bg-repeat);
+  background-position: 0 0, 0 0, var(--reader-bg-position);
 }
 
 /* 正文区：它自己滚（整页锁在一屏内，只有这一块动），滚到底会再接一批上来 */
@@ -1564,18 +1597,20 @@ progress::-webkit-progress-value {
 /* ------------------------------------------------------------------ */
 
 /* 左上角悬停浮出的小书架：一块小木板 + 一排彩色书脊，点了回书架。
-   平时既不可见也不吃鼠标（免得挡住最上面几行正文的拖选），悬停才浮出来 */
+   平时既不可见也不吃鼠标（免得挡住最上面几行正文的拖选）；触发范围 / 延迟在
+   Reader.tsx（`PEEK_HIT` / `PEEK_DELAY_MS`）—— 要停够一会儿才浮出来，一按鼠标就收。
+   整块也比从前小一圈：它压在正文上时，遮住的字越少越好 */
 .reader-shelf-thumb {
   position: absolute;
   z-index: 5;
   /* 往下让一点：最上面那 12px 是自动翻页的小牌子（`.auto-chip`） */
   top: 2.4rem;
-  left: 0.85rem;
+  left: 0.6rem;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.45rem 0.5rem 0.35rem;
+  padding: 0.4rem 0.45rem 0.3rem;
   border: 1px solid var(--wood-line);
   border-radius: 0.6rem;
   background-color: var(--wood-surface);
@@ -1600,7 +1635,7 @@ progress::-webkit-progress-value {
 .peek-shelf {
   display: flex;
   flex-direction: column;
-  width: 5.6rem;
+  width: 4.8rem;
 }
 
 .peek-shelf-row {
@@ -1608,12 +1643,12 @@ progress::-webkit-progress-value {
   align-items: flex-end;
   justify-content: center;
   gap: 2px;
-  height: 2.3rem;
+  height: 2rem;
   padding: 0 0.15rem;
 }
 
 .peek-spine {
-  width: 0.5rem;
+  width: 0.45rem;
   border-radius: 2px 2px 0 0;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28),
     inset -1px 0 0 rgba(0, 0, 0, 0.22);

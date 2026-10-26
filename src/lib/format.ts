@@ -125,13 +125,15 @@ export function heatLabel(level: string): string {
 /**
  * Render a file size the way a file manager does (``1.2 MB``).
  *
- * Only the "已归档" page needs this: an archive is a zip of one book, so plain
- * binary units (1 KB = 1024 B) are the least surprising thing to show.
+ * 「已归档」页与设置页的「本机缓存」都用它：归档是一个 zip、缓存是一个 sqlite
+ * 文件，两者都是纯字节数，所以统一按 1 KB = 1024 B 报。缓存一般到 MB 为止，
+ * 但库大到 GB 时也得读得出来。
  */
 export function humanBytes(bytes: number): string {
   // 负数 / 小数都收成非负整数
   const value = Math.max(0, Math.trunc(bytes));
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }

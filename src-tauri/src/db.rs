@@ -14,15 +14,23 @@
 //! beyond a single `CREATE ... IF NOT EXISTS` schema, and why a schema change may
 //! simply bump [`SCHEMA_VERSION`] and start over.
 //!
+//! Disk is treated as a resource too.  FTS5 leaves tombstones behind on `DELETE`
+//! and SQLite reuses free pages instead of shrinking the file, so [`Db::compact`]
+//! (FTS `optimize` + `VACUUM` + WAL truncate) is exposed to the settings page, and
+//! [`Db::open`] reclaims automatically when the file is mostly holes.  Blobs that
+//! change often (the reader background image) live in their own file under
+//! `app_data_dir`, never inside `gui_settings`.
+//!
 //! Deviation from the first plan: the SQL lives here and runs through `sqlx`
 //! directly instead of through `tauri-plugin-sql`, so that the schema, the CJK
 //! tokenisation and the queries are all testable in `cargo test` without a webview
 //! (see `tests/db.rs`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool};
 
 /// Bumped whenever [`SCHEMA`] changes in a way an old cache cannot survive.
@@ -371,6 +379,30 @@ pub struct Position {
     pub updated_at: String,
 }
 
+/// 缓存现在占了多少盘、里面有多少东西 —— 「本机缓存」那一块显示的就是它。
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageStats {
+    /// 主库文件（`cache.sqlite3`）的字节数
+    pub db_bytes: u64,
+    /// 还没合并回主库的 WAL（`cache.sqlite3-wal`）字节数
+    pub wal_bytes: u64,
+    /// 库文件里**已经空出来**、但还没还给文件系统的字节数（VACUUM 能收回来的就是它）
+    pub free_bytes: u64,
+    /// 缓存里现在有几本书
+    pub books: i64,
+    /// 全文索引现在有几块
+    pub chunks: i64,
+}
+
+/// 一次 [`Db::compact`] 前后的对照，界面拿它说「收回了多少」。
+#[derive(Debug, Clone, Serialize)]
+pub struct CompactReport {
+    /// 压缩前
+    pub before: StorageStats,
+    /// 压缩后
+    pub after: StorageStats,
+}
+
 /// Turn one `books` row into the struct the front end receives.
 fn book_from_row(row: &sqlx::sqlite::SqliteRow) -> BookRow {
     // tags 存的是 JSON 数组字符串；手改坏了就当空数组，不让一行脏数据打断整个书架
@@ -404,6 +436,8 @@ fn book_from_row(row: &sqlx::sqlite::SqliteRow) -> BookRow {
 pub struct Db {
     /// 连接池：几个连接足够，GUI 不会并发打数据库
     pool: SqlitePool,
+    /// 库文件的路径：报告体积、找同目录的 `-wal` 都要用它
+    path: PathBuf,
 }
 
 impl Db {
@@ -414,21 +448,35 @@ impl Db {
             let _ = std::fs::create_dir_all(parent);
         }
         // 打开文件；create_if_missing 让第一次运行不用手工建库
+        //
+        // 这些 PRAGMA 是**每个连接**都该有的（sqlx 连接池会照这份 options 重开连接）：
+        // * WAL：GUI 与终端可能同时开着，边读边写更稳；
+        // * synchronous=NORMAL：WAL 下已经够安全，省掉每次提交的 fsync —— 写设置不再卡一下；
+        // * wal_autocheckpoint / journal_size_limit：WAL 攒到约 2 MB 就并回主库，
+        //   文件上限 4 MB（不然一次大批量索引之后再删书，`-wal` 会一直胖着）；
+        // * temp_store=MEMORY：FTS 排序的临时表别落到磁盘上。
         let options = SqliteConnectOptions::new()
             .filename(path)
-            .create_if_missing(true);
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .busy_timeout(Duration::from_secs(5))
+            .pragma("wal_autocheckpoint", "512")
+            .pragma("journal_size_limit", "4194304")
+            .pragma("temp_store", "MEMORY");
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
             .connect_with(options)
             .await?;
-        // WAL：GUI 与终端可能同时开着，边读边写更稳。
-        // ⚠️ 只能在事务之外设置，所以它不放在 SCHEMA 里（见 SCHEMA 的说明）。
-        sqlx::query("PRAGMA journal_mode = WAL")
-            .execute(&pool)
-            .await?;
-        let db = Self { pool };
+        let db = Self {
+            pool,
+            path: path.to_path_buf(),
+        };
         // 版本对不上就整库重建（缓存可以随时丢，见模块注释）
         db.ensure_schema().await?;
+        // 上次删过书 / 重建过索引：把空出来的页还回去，顺手把 WAL 收干净。
+        // 失败不挡启动（缓存坏了还有 reset 兜底），但成功时第一次打开就小一圈。
+        let _ = db.trim_storage().await;
         Ok(db)
     }
 
@@ -483,6 +531,86 @@ impl Db {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        // 表都 DROP 过：文件里现在全是空洞。VACUUM 一次，把「清空缓存」真的变回小文件。
+        let _ = self.compact().await;
+        Ok(())
+    }
+
+    /// How much disk the cache is using, and how much of it is reclaimable.
+    ///
+    /// `free_bytes` is what SQLite has already released **inside** the file (after
+    /// deleting books or rebuilding the index); it only goes back to the OS after
+    /// a [`Db::compact`].  Reporting it separately is what lets the settings page
+    /// say "可以收回 7.4 MB" instead of just showing a size that never shrinks.
+    pub async fn storage_stats(&self) -> Result<StorageStats, sqlx::Error> {
+        // 页大小 / 空闲页数：两个 PRAGMA 合起来就是"文件里空着的字节数"
+        let page_size: i64 = sqlx::query_scalar("PRAGMA page_size")
+            .fetch_one(&self.pool)
+            .await?;
+        let free_pages: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+            .fetch_one(&self.pool)
+            .await?;
+        let books: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM books")
+            .fetch_one(&self.pool)
+            .await?;
+        let chunks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chunks")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(StorageStats {
+            db_bytes: file_len(&self.path),
+            wal_bytes: file_len(&wal_path(&self.path)),
+            free_bytes: (free_pages.max(0) as u64) * (page_size.max(0) as u64),
+            books,
+            chunks,
+        })
+    }
+
+    /// Squeeze the cache back to the smallest file it can be.
+    ///
+    /// Two things keep a SQLite + FTS5 file fat even after the rows are gone:
+    /// FTS5 never shrinks its own segment b-tree on `DELETE`, and SQLite reuses free
+    /// pages instead of returning them to the OS.  So: merge the FTS segments,
+    /// `VACUUM` the file, then truncate the WAL that the `VACUUM` just filled.
+    pub async fn compact(&self) -> Result<CompactReport, sqlx::Error> {
+        let before = self.storage_stats().await?;
+        self.optimize_index().await?;
+        // VACUUM 不能在事务里跑（sqlx 直接执行即可；连接池此时没有别的事务）
+        sqlx::query("VACUUM").execute(&self.pool).await?;
+        // VACUUM 写出来的页先待在 WAL 里；截断一次，磁盘上别留一份同样大的副本
+        self.checkpoint().await?;
+        let after = self.storage_stats().await?;
+        Ok(CompactReport { before, after })
+    }
+
+    /// Startup housekeeping: reclaim if the cache is mostly holes, else just
+    /// checkpoint the WAL so a previous session's writes are not left duplicated.
+    async fn trim_storage(&self) -> Result<(), sqlx::Error> {
+        let stats = self.storage_stats().await?;
+        // 空洞 > 4 MB 且超过文件四分之一才值得 VACUUM；小空洞留在文件里复用更划算
+        let bloated =
+            stats.free_bytes > 4 * 1024 * 1024 && stats.free_bytes * 4 > stats.db_bytes.max(1);
+        if bloated {
+            self.compact().await?;
+        } else {
+            self.checkpoint().await?;
+        }
+        Ok(())
+    }
+
+    /// Merge the FTS5 segment b-tree (its own `DELETE` only leaves tombstones).
+    async fn optimize_index(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO chunks_fts(chunks_fts) VALUES('optimize')")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Fold the WAL back into the main file and truncate it to zero bytes.
+    async fn checkpoint(&self) -> Result<(), sqlx::Error> {
+        // PRAGMA 会回一行 `(busy, log, checkpointed)`；用 fetch_all 而不是 execute
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_all(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -530,13 +658,19 @@ impl Db {
             .await?;
         }
         // 内核里已经没有的书：正文块与全文索引也一起清掉（缓存只留有用的）
-        sqlx::query("DELETE FROM chunks WHERE book_id NOT IN (SELECT id FROM books)")
+        let orphan_chunks = sqlx::query("DELETE FROM chunks WHERE book_id NOT IN (SELECT id FROM books)")
             .execute(&mut *tx)
-            .await?;
+            .await?
+            .rows_affected();
         sqlx::query("DELETE FROM chunks_fts WHERE book_id NOT IN (SELECT id FROM books)")
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        // 删过书就把 WAL 并回去（FTS 的碎片交给 compact / 下次启动的 trim_storage 收，
+        // 每次同步都跑一遍全局 optimize 会拖慢书架刷新）。
+        if orphan_chunks > 0 {
+            let _ = self.checkpoint().await;
+        }
         Ok(())
     }
 
@@ -819,6 +953,21 @@ impl Db {
         .await?;
         Ok(())
     }
+}
+
+/// Size of one file in bytes (`0` when it does not exist -- the WAL usually does not).
+fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+}
+
+/// The `-wal` sidecar SQLite puts next to the database (`cache.sqlite3-wal`).
+///
+/// Built with `OsString` instead of `format!` so a path with non-UTF-8 bytes still
+/// points at the right file.
+fn wal_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push("-wal");
+    PathBuf::from(name)
 }
 
 /// Rows of text one chunk may hold before the indexer splits it again.
@@ -1350,6 +1499,98 @@ mod tests {
             .await
             .expect("replace");
         assert_eq!(db.list_books().await.expect("list").len(), 1);
+        let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    /// A fat index: enough text that deleting it leaves pages worth reclaiming.
+    fn fat_chunks(count: i64) -> Vec<Chunk> {
+        let text = "三体世界就在我们眼前。".repeat(1500);
+        (0..count)
+            .map(|ordinal| Chunk {
+                ordinal,
+                title: "第一章".to_string(),
+                line_start: ordinal * 10,
+                line_end: ordinal * 10 + 9,
+                text: text.clone(),
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn storage_stats_report_the_file_and_compact_returns_the_holes() {
+        // 删掉正文块之后，文件里会留下空洞：stats 要如实报出来，compact 要真的收回去
+        let path = temp_db("compact");
+        let db = Db::open(&path).await.expect("open");
+        db.replace_books(&[book("aaa", "三体", 0.0)], "2026-03-01T21:00:00")
+            .await
+            .expect("replace");
+        db.reindex_book("aaa", &fat_chunks(20)).await.expect("reindex");
+        // 有书有块
+        let full = db.storage_stats().await.expect("stats");
+        assert_eq!((full.books, full.chunks), (1, 20));
+        assert!(full.db_bytes > 0);
+
+        // 内核里没有这本书了：块与 FTS 一起删，但空间还在文件里
+        db.replace_books(&[], "2026-03-01T22:00:00")
+            .await
+            .expect("replace");
+        let before = db.storage_stats().await.expect("stats");
+        assert_eq!((before.books, before.chunks), (0, 0));
+        assert!(before.free_bytes > 0, "删过之后应当有空闲页");
+        // 删掉的书不能再被搜到
+        assert!(db.search("三体", 10).await.expect("search").is_empty());
+
+        let report = db.compact().await.expect("compact");
+        // VACUUM + checkpoint(TRUNCATE)：空闲页归零、WAL 清空、总占用变小
+        assert_eq!(report.after.free_bytes, 0);
+        assert_eq!(report.after.wal_bytes, 0);
+        let before_total = report.before.db_bytes + report.before.wal_bytes;
+        let after_total = report.after.db_bytes + report.after.wal_bytes;
+        assert!(
+            after_total < before_total,
+            "compact 之后应当更小：{before_total} -> {after_total}"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[tokio::test]
+    async fn reset_hands_the_space_back_to_the_filesystem() {
+        // 「清空缓存」不能只是把行删掉、文件还胖着
+        let path = temp_db("reset-shrink");
+        let db = Db::open(&path).await.expect("open");
+        db.replace_books(&[book("aaa", "三体", 0.0)], "2026-03-01T21:00:00")
+            .await
+            .expect("replace");
+        db.reindex_book("aaa", &fat_chunks(20)).await.expect("reindex");
+        let before = db.storage_stats().await.expect("stats");
+        db.reset().await.expect("reset");
+        let after = db.storage_stats().await.expect("stats");
+        assert_eq!(after.free_bytes, 0);
+        assert!(
+            after.db_bytes < before.db_bytes,
+            "reset 之后文件应当变小：{} -> {}",
+            before.db_bytes,
+            after.db_bytes
+        );
+        let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[tokio::test]
+    async fn the_cache_runs_in_wal_with_normal_synchronous() {
+        // 这两项决定了「写一条设置」要不要等磁盘；连接参数里配一次就该对所有连接生效
+        let path = temp_db("pragma");
+        let db = Db::open(&path).await.expect("open");
+        let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&db.pool)
+            .await
+            .expect("journal_mode");
+        assert_eq!(journal.to_lowercase(), "wal");
+        // synchronous: 1 = NORMAL
+        let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
+            .fetch_one(&db.pool)
+            .await
+            .expect("synchronous");
+        assert_eq!(synchronous, 1);
         let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
     }
 }
